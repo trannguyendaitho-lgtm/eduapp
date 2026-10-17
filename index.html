@@ -117,14 +117,15 @@ function seed(){
 
 let db=JSON.parse(localStorage.getItem(K)||'null')||seed();
 let fsSetDoc = null, fsDocRef = null;
+let fbAuth = null, GoogleProvider = null, signInPopup = null;
 
-// Ghi đè hàm lưu: Vừa lưu trên máy, vừa đẩy thẳng lên Firebase
+// Lưu đồng thời vào máy và đẩy lên Firebase Firestore
 const save=()=>{
-  localStorage.setItem(K,JSON.stringify(db));
-  if(fsSetDoc && fsDocRef) fsSetDoc(fsDocRef, db).catch(e=>console.log("Lỗi đồng bộ Firebase", e));
+  try { localStorage.setItem(K,JSON.stringify(db)); } catch(e) {}
+  if(fsSetDoc && fsDocRef) fsSetDoc(fsDocRef, db).catch(e=>console.log("Lỗi đồng bộ Firebase:", e));
 };
 
-// --- KẾT NỐI FIREBASE ONLINE CỦA BẠN ---
+// --- KẾT NỐI FIREBASE ONLINE & GOOGLE AUTH ---
 import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js').then(firebase => {
   const firebaseConfig = {
     apiKey: "AIzaSyBl0LF79mnOr6Y-V7zFxkmUQ0WcieLd0NM",
@@ -135,23 +136,57 @@ import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js').then(fireba
     appId: "1:312064549331:web:79cdfc1398cf8248f08f26"
   };
   const app = firebase.initializeApp(firebaseConfig);
+
+  // 1. Kết nối Firestore Database
   import('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js').then(firestore => {
     const fsDb = firestore.getFirestore(app);
     fsDocRef = firestore.doc(fsDb, "EduTestLMS", "MainData");
     fsSetDoc = firestore.setDoc;
-    
-    // Lắng nghe dữ liệu theo thời gian thực (Giáo viên và Học sinh tự động thấy điểm của nhau)
     firestore.onSnapshot(fsDocRef, (snap) => {
       if(snap.exists()) {
-         db = snap.data();
-         localStorage.setItem(K,JSON.stringify(db));
-         if(typeof render === 'function') render();
+        db = snap.data();
+        localStorage.setItem(K,JSON.stringify(db));
+        if(typeof render === 'function') render();
       } else {
-         save(); // Lần đầu mở: Đẩy dữ liệu mẫu lên máy chủ
+        save();
       }
     });
   });
+
+  // 2. Kết nối Firebase Google Authentication
+  import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js').then(authModule => {
+    fbAuth = authModule.getAuth(app);
+    GoogleProvider = new authModule.GoogleAuthProvider();
+    signInPopup = authModule.signInWithPopup;
+  });
 });
+
+// Hàm xử lý khi bấm nút "Tiếp tục với Google"
+window.loginWithGoogle = function() {
+  if(!signInPopup || !fbAuth) return toast('Đang kết nối máy chủ Google, vui lòng thử lại sau 2 giây...', 'info');
+  signInPopup(fbAuth, GoogleProvider).then((result) => {
+    const user = result.user;
+    const uid = 'g_' + user.uid;
+    if(!db.users[uid]) {
+      db.users[uid] = {
+        uid: uid,
+        name: user.displayName || (user.email ? user.email.split('@')[0] : 'Người dùng'),
+        email: user.email || '',
+        pass: '',
+        role: null,
+        note: '',
+        avatar: user.photoURL || '',
+        friends: [],
+        requests: []
+      };
+      save();
+    }
+    toast('Đăng nhập Google thành công!', 'success');
+    login(uid);
+  }).catch((err) => {
+    toast('Lỗi đăng nhập Google: ' + err.message, 'error');
+  });
+};
 
 let me=localStorage.getItem(SK);
 const U=()=>db.users[me];
@@ -160,11 +195,7 @@ let S={view:'home',arg:null,auth:'login'},E=null,T=null;
 function authV(){const reg=S.auth==='reg';
 return `<div class="min-h-screen grid place-items-center p-4 relative overflow-hidden"><i class="blob bg-indigo-500" style="width:380px;height:380px;left:-80px;top:-60px"></i><i class="blob bg-pink-400" style="width:320px;height:320px;right:-60px;top:20%;animation-delay:-3s"></i><i class="blob bg-emerald-400" style="width:340px;height:340px;left:35%;bottom:-120px;animation-delay:-6s"></i><div class="relative pop bg-white/80 backdrop-blur-xl border border-white rounded-3xl shadow-2xl p-8 w-full max-w-md">
 <div class="text-center mb-5"><div class="text-4xl">🎓</div><h1 class="text-2xl font-extrabold">EduTest LMS</h1><p class="text-sm text-slate-500">Kiểm tra &amp; quản lý lớp học trực tuyến</p></div>
-<button class="btn g w-full" onclick="toast('Chưa kết nối máy chủ – hãy dùng Email hoặc Đăng nhập Offline','error')"><b class="text-rose-500">G</b> Tiếp tục với Google</button>
-<div class="text-center text-xs text-slate-400 my-3">hoặc dùng email (lưu cục bộ trên máy)</div>
-${reg?'<input id="rn" class="inp mb-2" placeholder="Họ và tên">':''}
-<input id="em" type="email" class="inp mb-2" placeholder="Email"><input id="pw" type="password" class="inp" placeholder="Mật khẩu (≥ 6 ký tự)" onkeydown="if(event.key==='Enter')${reg?'doReg()':'doLogin()'}">
-<button class="btn p w-full mt-3" onclick="${reg?'doReg()':'doLogin()'}">${reg?'Tạo tài khoản':'Đăng nhập'}</button>
+<button class="btn g w-full" onclick="toast('Chưa kết nối máy chủ – hãy dùng Email hoặc Đăng nhập Offline','error')"><b class="text-rose-500">G</b> Tiếp tục với Google<button class="btn g w-full" onclick="loginWithGoogle()"><b class="text-rose-500">G</b> Tiếp tục với Google</button>
 <p class="text-center text-sm mt-3 text-slate-500">${reg?'Đã có tài khoản?':'Chưa có tài khoản?'} <a class="text-indigo-600 font-semibold cursor-pointer" onclick="S.auth='${reg?'login':'reg'}';render()">${reg?'Đăng nhập':'Đăng ký'}</a></p>
 <div class="mt-5 pt-4 border-t"><p class="text-xs font-bold text-amber-600 mb-2">🧪 ĐĂNG NHẬP OFFLINE (để test, không cần máy chủ)</p>
 <div class="grid grid-cols-2 gap-2"><button class="btn s sm" onclick="login('t_demo')">👩‍🏫 Vào là Giáo viên</button><button class="btn s sm" onclick="login('s_an')">🧑‍🎓 Vào là Học sinh</button></div></div></div></div>`}
