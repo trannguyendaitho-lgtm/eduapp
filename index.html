@@ -128,12 +128,13 @@ const save=()=>{
 // --- KẾT NỐI FIREBASE ONLINE & GOOGLE AUTH ---
 import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js').then(firebase => {
   const firebaseConfig = {
-    apiKey: "AIzaSyBl0LF79mnOr6Y-V7zFxkmUQ0WcieLd0NM",
+    apiKey: "AIzaSyBl0Lf79mnOr6Y-V7zFxkmUQ0WcIeLdONM",
     authDomain: "quan-li-kiem-tra-72e40.firebaseapp.com",
     projectId: "quan-li-kiem-tra-72e40",
     storageBucket: "quan-li-kiem-tra-72e40.firebasestorage.app",
     messagingSenderId: "312064549331",
-    appId: "1:312064549331:web:79cdfc1398cf8248f08f26"
+    appId: "1:312064549331:web:79cdfc1398cf8248f08f26",
+    measurementId: "G-EJ0WVZNSD4"
   };
   const app = firebase.initializeApp(firebaseConfig);
 
@@ -195,7 +196,7 @@ let S={view:'home',arg:null,auth:'login'},E=null,T=null;
 function authV(){const reg=S.auth==='reg';
 return `<div class="min-h-screen grid place-items-center p-4 relative overflow-hidden"><i class="blob bg-indigo-500" style="width:380px;height:380px;left:-80px;top:-60px"></i><i class="blob bg-pink-400" style="width:320px;height:320px;right:-60px;top:20%;animation-delay:-3s"></i><i class="blob bg-emerald-400" style="width:340px;height:340px;left:35%;bottom:-120px;animation-delay:-6s"></i><div class="relative pop bg-white/80 backdrop-blur-xl border border-white rounded-3xl shadow-2xl p-8 w-full max-w-md">
 <div class="text-center mb-5"><div class="text-4xl">🎓</div><h1 class="text-2xl font-extrabold">EduTest LMS</h1><p class="text-sm text-slate-500">Kiểm tra &amp; quản lý lớp học trực tuyến</p></div>
-<button class="btn g w-full" onclick="toast('Chưa kết nối máy chủ – hãy dùng Email hoặc Đăng nhập Offline','error')"><b class="text-rose-500">G</b> Tiếp tục với Google<button class="btn g w-full" onclick="loginWithGoogle()"><b class="text-rose-500">G</b> Tiếp tục với Google</button>
+<button class="btn g w-full" onclick="loginWithGoogle()"><b class="text-rose-500">G</b> Tiếp tục với Google</button>text-rose-500">G</b> Tiếp tục với Google<button class="btn g w-full" onclick="loginWithGoogle()"><b class="text-rose-500">G</b> Tiếp tục với Google</button>
 <p class="text-center text-sm mt-3 text-slate-500">${reg?'Đã có tài khoản?':'Chưa có tài khoản?'} <a class="text-indigo-600 font-semibold cursor-pointer" onclick="S.auth='${reg?'login':'reg'}';render()">${reg?'Đăng nhập':'Đăng ký'}</a></p>
 <div class="mt-5 pt-4 border-t"><p class="text-xs font-bold text-amber-600 mb-2">🧪 ĐĂNG NHẬP OFFLINE (để test, không cần máy chủ)</p>
 <div class="grid grid-cols-2 gap-2"><button class="btn s sm" onclick="login('t_demo')">👩‍🏫 Vào là Giáo viên</button><button class="btn s sm" onclick="login('s_an')">🧑‍🎓 Vào là Học sinh</button></div></div></div></div>`}
