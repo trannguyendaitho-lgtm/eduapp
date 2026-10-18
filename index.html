@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!--
-=====================  EduTest LMS v4 — HƯỚNG DẪN TRIỂN KHAI FIREBASE  =====================
+=====================  EduTest LMS v6.1 — HƯỚNG DẪN TRIỂN KHAI FIREBASE  =====================
 Collections: users, classes, exams (đề KHÔNG chứa đáp án), examKeys (đáp án + giải thích, chỉ GV chủ đề đọc được),
              submissions (kết quả), drafts (bài làm nháp, chống F5), _clock (lấy giờ máy chủ).
 CFG.GRADING trong code: 'sim' = chấm giả lập trên máy (chạy thử, đáp án nằm riêng trong KeyStore, không vào state học sinh)
@@ -26,17 +26,31 @@ service cloud.firestore { match /databases/{database}/documents {
     allow create: if request.resource.data.teacherId == me();
     allow update, delete: if resource.data.teacherId == me();
   }
-  match /examKeys/{id} {   // học sinh KHÔNG đọc được đáp án
-    allow read, write: if request.auth != null && (resource == null ? request.resource.data.teacherId == me() : resource.data.teacherId == me());
+  match /examKeys/{id} {   // v5 chế độ 'sim': HS đã đăng nhập đọc được khóa để chấm (muốn bảo mật thật: dùng 'cloud' + đổi read thành resource.data.teacherId == me())
+    allow read: if request.auth != null;
+    allow create, update, delete: if request.auth != null && (resource == null ? request.resource.data.teacherId == me() : resource.data.teacherId == me());
   }
   match /submissions/{id} {
     allow read: if resource.data.studentId == me() || resource.data.teacherId == me();
-    allow create: if false;   // chỉ Cloud Function (Admin SDK) được ghi. Chế độ 'sim': đổi thành  request.resource.data.studentId == me()
+    allow create: if request.resource.data.studentId == me();   // v5 chế độ 'sim'. Chế độ 'cloud' đổi thành false.  // chỉ Cloud Function (Admin SDK) được ghi. Chế độ 'sim': đổi thành  request.resource.data.studentId == me()
     allow delete: if resource.data.teacherId == me();
   }
   match /drafts/{id} {
-    allow read, write: if request.auth != null && (resource == null ? request.resource.data.uid == me() : resource.data.uid == me());
+    allow read: if request.auth != null && (resource.data.uid == me() || resource.data.teacherId == me());   // v6: GV đọc bài nháp để giám sát trực tiếp
+    allow create: if request.auth != null && request.resource.data.uid == me();
+    allow update: if request.auth != null && (resource.data.uid == me() || (resource.data.teacherId == me() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['forceSubmit'])));
+    allow delete: if request.auth != null && resource.data.uid == me();
   }
+  // v5.2 – danh sách học sinh & đăng nhập bằng mã (cần bật Authentication → Anonymous)
+  match /rosters/{cid} { allow read, write: if request.auth != null && (resource == null ? request.resource.data.teacherId == me() : resource.data.teacherId == me()); }
+  match /rcodes/{code} {
+    allow get: if request.auth != null;
+    allow list: if request.auth != null && resource.data.teacherId == me();
+    allow create: if request.auth != null && request.resource.data.teacherId == me();
+    allow update: if request.auth != null && (resource.data.teacherId == me() || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uid']));
+    allow delete: if request.auth != null && resource.data.teacherId == me();
+  }
+  match /presence/{uid} { allow read: if request.auth != null; allow write: if request.auth != null && request.auth.uid == uid; }
   match /_clock/{uid} { allow read, write: if request.auth != null && request.auth.uid == uid; }
 }}
 
@@ -76,15 +90,16 @@ Triển khai: firebase deploy --only functions,firestore:rules
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>EduTest LMS v4 – Bản Online</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
+<title>EduTest LMS v6.1 – Bản Online</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <style type="text/tailwindcss">
 :root{--ease:cubic-bezier(.34,1.56,.64,1)}
 html{scroll-behavior:smooth}
-body,button,input,select,textarea{font-family:'Be Vietnam Pro','Inter','Segoe UI',system-ui,-apple-system,Roboto,Arial,sans-serif}
-body{font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased;letter-spacing:-.005em}
-h1,h2,h3,.h2,b{letter-spacing:-.015em}
+body,button,input,select,textarea{font-family:'Inter','Be Vietnam Pro','Segoe UI',system-ui,-apple-system,Roboto,Arial,sans-serif}
+body{font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased;letter-spacing:-.011em}
+h1,h2,h3,.h2,b{letter-spacing:-.011em}
+h1,h2,h3,.h2,.logo b{font-family:'Plus Jakarta Sans','Inter',system-ui,sans-serif}
 .font-extrabold{font-weight:700!important}.font-black{font-weight:800!important}
 #clk{font-family:inherit;font-variant-numeric:tabular-nums;letter-spacing:.02em}
 body{background:#eef0f7;background-image:radial-gradient(900px 520px at 6% -5%,rgba(99,102,241,.25),transparent 60%),radial-gradient(700px 500px at 100% 0%,rgba(236,72,153,.16),transparent 60%),radial-gradient(800px 600px at 55% 110%,rgba(16,185,129,.16),transparent 60%);background-attachment:fixed}
@@ -146,6 +161,16 @@ body{background:#eef0f7;background-image:radial-gradient(900px 520px at 6% -5%,r
 .nv:hover{transform:translateX(2px)}
 .chip:hover{transform:none}
 .noselect{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}.noselect input,.noselect textarea{user-select:text;-webkit-user-select:text}
+
+/* icon SVG nét mảnh (v6): xám mặc định, đổi màu khi hover/active */
+.ic{width:1.15em;height:1.15em;flex:none;vertical-align:-.2em;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;color:#64748b;transition:color .15s}
+.nv .ic{width:1.2rem;height:1.2rem}
+.nv:hover .ic,.nv.on .ic,.btn.g:hover .ic,summary:hover .ic{color:#4f46e5}
+.btn.p .ic,.btn.s .ic,.btn.r .ic,.bd .ic,.text-white .ic{color:inherit}
+.text-amber-600 .ic,.text-rose-600 .ic,.text-emerald-700 .ic,.text-indigo-600 .ic,.text-indigo-700 .ic{color:inherit}
+.ic.ic-ok{color:#059669}.ic.ic-bad{color:#e11d48}.ic.ic-warn{color:#d97706}
+.text-5xl .ic,.text-4xl .ic,.text-3xl .ic{stroke-width:1.4;width:1em;height:1em;color:#6366f1}
+.h2 .ic{margin-right:.15rem}
 </style>
 </head>
 <body class="bg-slate-100 text-slate-900">
@@ -156,7 +181,7 @@ body{background:#eef0f7;background-image:radial-gradient(900px 520px at 6% -5%,r
 /* ============ 0. TIỆN ÍCH ============ */
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const nid=x=>{x=String(x||'').trim().toLowerCase();return x&&x[0]!=='#'?'#'+x:x};
+const nid=x=>{x=String(x||'').normalize('NFKC').replace(/[\s\u200b-\u200f\u2060\ufeff]+/g,'').toLowerCase().replace(/^#+/,'');return x?'#'+x:''};
 const genId=(pre,used)=>{let c;do{c='#'+pre+(Math.floor(Math.random()*90000)+10000)}while(used.some(x=>String(x).toLowerCase()===c));return c};
 const byPid=v=>Object.values(db.users).find(u=>u.pid&&u.pid.toLowerCase()===nid(v));
 function copyId(t){try{navigator.clipboard.writeText(t);toast('Đã sao chép '+t,'success')}catch(e){toast(t,'info')}}
@@ -166,14 +191,14 @@ const fdate=t=>new Date(t).toLocaleString('vi-VN');
 const fclock=s=>String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
 const norm=s=>String(s).trim().toLowerCase().replace(/\s+/g,' ');
 const TL={mc:'Trắc nghiệm',tf:'Đúng / Sai',match:'Kéo thả ghép cặp',short:'Tự luận ngắn'};
-function toast(m,t){const d=document.createElement('div');d.className='pop px-4 py-3 rounded-xl text-white text-sm font-semibold shadow-lg '+(t==='error'?'bg-rose-600':t==='success'?'bg-emerald-600':'bg-slate-700');d.textContent=m;$('#toasts').append(d);setTimeout(()=>d.remove(),3000)}
-function modal(h,w){closeModal();const m=document.createElement('div');m.id='mdl';m.className='fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50';m.innerHTML='<div class="pop bg-white rounded-3xl shadow-2xl p-6 w-full '+(w||'max-w-lg')+' max-h-[90vh] overflow-auto">'+h+'</div>';document.body.append(m);return m}
+function toast(m,t){const d=document.createElement('div');d.className='pop px-4 py-3 rounded-xl text-white text-sm font-semibold shadow-lg '+(t==='error'?'bg-rose-600':t==='success'?'bg-emerald-600':'bg-slate-700');d.textContent=m;$('#toasts').append(d);iconize(d);setTimeout(()=>d.remove(),3000)}
+function modal(h,w){closeModal();const m=document.createElement('div');m.id='mdl';m.className='fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50';m.innerHTML='<div class="pop bg-white rounded-3xl shadow-2xl p-6 w-full '+(w||'max-w-lg')+' max-h-[90vh] overflow-auto">'+h+'</div>';document.body.append(m);iconize(m);return m}
 function closeModal(){const m=$('#mdl');if(m)m.remove()}
 function ask(msg){return new Promise(r=>{const m=modal(`<p class="font-medium mb-4">${esc(msg)}</p><div class="flex gap-2 justify-end"><button class="btn g" id="n">Hủy</button><button class="btn r" id="y">Đồng ý</button></div>`);m.querySelector('#n').onclick=()=>{closeModal();r(false)};m.querySelector('#y').onclick=()=>{closeModal();r(true)}})}
-function zoom(src){const m=document.createElement('div');m.className='fixed inset-0 bg-black/80 flex items-center justify-center z-[70] cursor-zoom-out';m.innerHTML=`<img src="${src}" class="max-w-[95vw] max-h-[95vh]">`;m.onclick=()=>m.remove();document.body.append(m)}
-function comp(f,max){return new Promise(r=>{const fr=new FileReader();fr.onload=()=>{const im=new Image();im.onload=()=>{const k=Math.min(1,max/im.width),c=document.createElement('canvas');c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);r(c.toDataURL('image/jpeg',.65))};im.src=fr.result};fr.readAsDataURL(f)})}
+function zoom(src){const m=document.createElement('div');m.className='fixed inset-0 bg-black/80 flex items-center justify-center z-[70] cursor-zoom-out';m.innerHTML=`<img src="${esc(src)}" class="max-w-[95vw] max-h-[95vh]">`;m.onclick=()=>m.remove();document.body.append(m)}
+function comp(f,max){return new Promise(r=>{const fr=new FileReader();fr.onload=()=>{const im=new Image();im.onload=()=>{const k=Math.min(1,max/im.width),c=document.createElement('canvas');c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);r(c.toDataURL('image/jpeg',.65))};im.onerror=()=>r('');im.src=fr.result};fr.onerror=()=>r('');fr.readAsDataURL(f)})}
 function seedShuffle(n,str){let h=0;for(const ch of str)h=(h*31+ch.charCodeAt(0))|0;const a=[...Array(n).keys()];for(let i=n-1;i>0;i--){h=(h*1103515245+12345)|0;const j=Math.abs(h>>8)%(i+1);[a[i],a[j]]=[a[j],a[i]]}return a}
-const av=(u,s=40)=>u.avatar?`<img src="${u.avatar}" style="width:${s}px;height:${s}px" class="rounded-full object-cover shrink-0">`:`<span style="width:${s}px;height:${s}px;font-size:${s/2.3}px" class="rounded-full bg-indigo-500 text-white grid place-items-center font-bold shrink-0">${esc((u.name||'?').trim()[0].toUpperCase())}</span>`;
+const av=(u,s=40)=>u.avatar?`<img src="${esc(u.avatar)}" style="width:${s}px;height:${s}px" class="rounded-full object-cover shrink-0">`:`<span style="width:${s}px;height:${s}px;font-size:${s/2.3}px" class="rounded-full bg-indigo-500 text-white grid place-items-center font-bold shrink-0">${esc(((u.name||'').trim()[0]||'?').toUpperCase())}</span>`;
 
 /* ============ 1. KHỐI DỮ LIỆU (Đã tích hợp Firebase Online) ============ */
 const K='lmsv4_db',SK='lmsv4_me',TK='lmsv4_take',DK='lmsv4_draft_',KS_K='lmsv4_keys';
@@ -182,11 +207,60 @@ const K='lmsv4_db',SK='lmsv4_me',TK='lmsv4_take',DK='lmsv4_draft_',KS_K='lmsv4_k
 const CFG={GRADING:'sim'};
 const COLS={users:'users',classes:'classes',exams:'exams',subs:'submissions',drafts:'drafts'};
 const FS={ready:false,m:null,db:null,un:[],call:null},synced={};
-let fbAuth=null,fbUser=null,GoogleProvider=null,signInPopup=null,TOFF=0;
+let fbAuth=null,fbUser=null,GoogleProvider=null,signInPopup=null,signAnon=null,TOFF=0;
 const now=()=>Date.now()+TOFF,cloud=()=>CFG.GRADING==='cloud'&&FS.ready;
 const toLocal=ms=>ms?new Date(ms-new Date(ms).getTimezoneOffset()*60000).toISOString().slice(0,16):'';
 const winTxt=e=>(e.openAt?' · mở '+fdate(e.openAt):'')+(e.closeAt?' · đóng '+fdate(e.closeAt):'');
 const vis=x=>x.uid!==me&&x.role&&!(FS.ready&&x.demo);
+
+/* v5: các trường dùng chung (nhiều người cùng sửa) chỉ ghi bằng arrayUnion/arrayRemove, không bao giờ bị ghi đè cả tài liệu */
+const SH={users:['friends','requests'],classes:['students','pending','invites']};
+const RO={},RC={},PRES={},LIVE={};let RT=null;
+const isReady=e=>e.status!=='queue';
+function logAsg(eid,cid,a){const e=db.exams[eid],c=db.classes[cid];if(!e||!c)return;(e.history=e.history||[]).push({cid,cn:c.name,t:now(),a});if(e.history.length>60)e.history.shift()}
+const asgInfo=e=>{const cl=Object.values(db.classes).filter(c=>c.teacherId===me&&c.assigns.includes(e.id)),h=(e.history||[]).slice().reverse();
+  return `<div class="flex items-center gap-1 flex-wrap mb-2 text-xs"><span class="text-slate-500">${ic('school')} Đã giao lớp:</span>${cl.map(c=>`<button class="bd bg-indigo-100 text-indigo-700 hover:bg-indigo-200" onclick="S.ctab='asg';go('class','${c.id}')">${esc(c.name)}</button>`).join('')||'<span class="text-slate-400">chưa giao lớp nào</span>'}</div>${h.length?`<details class="mb-2 text-xs"><summary class="cursor-pointer text-slate-500">${ic('clock')} Lịch sử giao bài (${h.length})</summary><ul class="mt-1 space-y-0.5 text-slate-600">${h.slice(0,20).map(x=>`<li>${fdate(x.t)} · <b>${esc(x.a)}</b> · ${esc(x.cn)}</li>`).join('')}</ul></details>`:''}`};
+const statusBadge=e=>isReady(e)?'<span class="bd bg-emerald-100 text-emerald-700">Đã duyệt</span>':'<span class="bd bg-amber-100 text-amber-700">Hàng chờ</span>';
+function setStatus(id,st){const e=db.exams[id];if(!e)return;e.status=st;save();toast(st==='ready'?'Đã duyệt phát hành – có thể giao bài vào lớp':'Đã rút đề về hàng chờ','success');render()}
+const pickOrder=e=>{const N=e.questions.length,pc=e.pickCount>0&&e.pickCount<N?e.pickCount:N,o=seedShuffle(N,uid()).slice(0,pc);return e.shuffle?o:o.sort((a,b)=>a-b)};
+const dOf=(s,i)=>{const D=s.detail||[];return D.find(x=>x.qi===i)||(D[i]&&D[i].qi===undefined?D[i]:null)};
+const canSee=s=>{const e=db.exams[s.examId];if(!e||e.teacherId===me)return{score:true,detail:true};const pub=e.published||(e.closeAt&&now()>=e.closeAt),m=e.reveal||'full';return{score:m!=='hide'||!!pub,detail:m==='full'||!!pub}};
+const scoreCell=s=>canSee(s).score?`<b>${s.score}</b><span class="bd ${s.pass?'bg-emerald-100 text-emerald-700':'bg-rose-100 text-rose-700'}">${s.pass?'Đạt':'Chưa đạt'}</span>`:'<span class="bd bg-slate-100 text-slate-500">Chờ công bố</span>';
+const exBtn=(e,st)=>e.maxTry>0&&st.n>=e.maxTry?'<span class="bd bg-slate-100 text-slate-500">Hết lượt</span>':`<button class="btn p sm" onclick="startExam('${e.id}')">${st.n?'Làm lại':'Làm bài'}${e.maxTry>0?' ('+(e.maxTry-st.n)+' lượt)':''}</button>`;
+function statsHtml(e,ss){if(!ss.length)return '';const sc=ss.map(x=>x.score),avg=(sc.reduce((a,b)=>a+b,0)/sc.length).toFixed(2),box=(v,l)=>`<div class="p-2 rounded-lg bg-slate-50 border border-slate-200"><b>${v}</b><div class="text-xs text-slate-500">${l}</div></div>`;
+  const pc=a=>a.length?Math.round(a.filter(x=>x.r===true).length/a.length*100):null,q=e.questions.map((_,i)=>pc(ss.map(x=>dOf(x,i)).filter(Boolean))),lv=[1,2,3].map(L=>pc(ss.flatMap(x=>(x.detail||[]).filter(y=>(y.lv||1)===L))));
+  return `<div class="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-3 text-center">${box(ss.length,'bài nộp')}${box(avg,'điểm TB')}${box(Math.max(...sc),'cao nhất')}${box(Math.min(...sc),'thấp nhất')}${box(ss.filter(x=>x.pass).length+'/'+ss.length,'đạt')}</div><div class="flex flex-wrap gap-1 mb-2">${lv.map((p,i)=>`<span class="bd bg-slate-100 text-slate-700">Mức ${i+1}: ${p===null?'–':p+'% đúng'}</span>`).join('')}</div><details class="mb-3"><summary class="text-sm font-semibold cursor-pointer">Tỉ lệ làm đúng từng câu</summary><div class="flex flex-wrap gap-1 mt-2">${q.map((p,i)=>`<span class="bd ${p===null?'bg-slate-100 text-slate-500':p>=70?'bg-emerald-100 text-emerald-700':p>=40?'bg-amber-100 text-amber-700':'bg-rose-100 text-rose-700'}">Câu ${i+1}: ${p===null?'–':p+'%'}</span>`).join('')}</div></details>`}
+function gate(e,n){return new Promise(r=>{const li=[`${e.pickCount>0&&e.pickCount<e.questions.length?e.pickCount:e.questions.length} câu · ${e.minutes} phút, đồng hồ chạy ngay khi bấm bắt đầu`,e.maxTry>0?`Lượt làm: còn ${e.maxTry-n}/${e.maxTry} (nộp rồi không làm lại được)`:'Không giới hạn số lượt làm','Mỗi lần rời tab/cửa sổ đều được ghi lại và giáo viên sẽ thấy'+(e.maxViol>0?` – rời quá ${e.maxViol} lần bài sẽ TỰ ĐỘNG NỘP`:''),'Không được sao chép / dán / chuột phải','Thoát giữa chừng (nút Thoát hoặc nút Back) = hệ thống TỰ ĐỘNG NỘP BÀI và tính hết 1 lượt thi',e.fs?'Bắt buộc toàn màn hình – thoát ra bị tính 1 lần vi phạm':'',e.lockNav?'Không được quay lại câu trước':'',e.reveal==='hide'?'Kết quả chỉ hiện khi giáo viên công bố':e.reveal==='score'?'Chỉ hiện điểm, đáp án khi giáo viên công bố':'Xem điểm và đáp án ngay sau khi nộp'].filter(Boolean);
+  const m=modal(`<h3 class="h2">📝 ${esc(e.title)}</h3><p class="text-sm font-semibold mb-1">Quy chế phòng thi</p><ul class="text-sm text-slate-600 list-disc pl-5 mb-3 space-y-1">${li.map(x=>'<li>'+esc(x)+'</li>').join('')}</ul>${e.pwh?'<input id="gpw" class="inp mb-3" placeholder="Mật khẩu vào thi (cô giáo cung cấp)" autocomplete="off">':''}<label class="text-sm flex items-center gap-2 mb-4"><input type="checkbox" id="gok"> Tôi đã đọc và đồng ý quy chế</label><div class="flex gap-2 justify-end"><button class="btn g" id="gn">Hủy</button><button class="btn p" id="gy">Bắt đầu làm bài</button></div>`);
+  m.querySelector('#gn').onclick=()=>{closeModal();r(false)};
+  m.querySelector('#gy').onclick=()=>{if(!m.querySelector('#gok').checked)return toast('Hãy tích đồng ý quy chế','error');
+    if(e.pwh&&hash('pw|'+String(m.querySelector('#gpw').value).trim().toLowerCase())!==e.pwh)return toast('Sai mật khẩu vào thi','error');
+    closeModal();if(e.fs&&document.documentElement.requestFullscreen)document.documentElement.requestFullscreen().catch(()=>{});r(true)}})}
+function nextQ(){T.cur++;T.d.cur=T.cur;saveDraft();render()}
+async function delSub(sid,eid){if(!await ask('Xóa bài nộp này để học sinh được thi lại?'))return;delete db.subs[sid];save();results(eid)}
+function togglePub(eid){const e=db.exams[eid];e.published=!e.published;save();toast(e.published?'Đã công bố kết quả cho học sinh':'Đã ẩn kết quả','success');results(eid)}
+const ncode=x=>String(x||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/gi,'d').normalize('NFKC').replace(/[\s#]+/g,'').toLowerCase();
+const nn=x=>String(x||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/gi,'d').toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+const hash=str=>{let h1=0xdeadbeef,h2=0x41c6ce57;for(let i=0;i<str.length;i++){const c=str.charCodeAt(i);h1=Math.imul(h1^c,2654435761);h2=Math.imul(h2^c,1597334677)}h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);return (4294967296*(2097151&h2)+(h1>>>0)).toString(36)};
+const fixDoc=(c,v)=>{({users:['friends','requests'],classes:['students','pending','invites','assigns']}[c]||[]).forEach(f=>{if(!Array.isArray(v[f]))v[f]=[]});return v};
+const sig=(col,d)=>JSON.stringify(Object.fromEntries(Object.entries(d||{}).filter(([f])=>!(SH[col]||[]).includes(f))));
+function arr(col,id,f,op,v){const d=db[col][id];if(!d)return;const a=d[f]=d[f]||[];if(op==='add'){if(!a.includes(v))a.push(v)}else d[f]=a.filter(x=>x!==v);
+  try{localStorage.setItem(K,JSON.stringify(db))}catch(e){}if(!FS.ready)return;const M=FS.m;
+  M.updateDoc(M.doc(FS.db,col,id),{[f]:op==='add'?M.arrayUnion(v):M.arrayRemove(v)}).catch(e=>{console.warn(col,id,f,e.code);toast('Không đồng bộ được thao tác ('+e.code+')','error')})}
+/* v5: tra mã (người dùng / lớp / bài kiểm tra) – hỏi thẳng máy chủ, không phụ thuộc dữ liệu đã tải hay chưa */
+const TN={user:'ID người dùng',class:'ID lớp học',exam:'ID bài kiểm tra'};
+async function findCode(raw){const c=nid(raw);if(!c)return null;
+  const loc=()=>{const u=Object.values(db.users).find(x=>x.pid&&x.pid.toLowerCase()===c&&!(FS.ready&&x.demo));if(u)return{t:'user',v:u};
+    const k=Object.values(db.classes).find(x=>(x.code||'').toLowerCase()===c);if(k)return{t:'class',v:k};
+    const e=Object.values(db.exams).find(x=>(x.code||'').toLowerCase()===c);return e?{t:'exam',v:e}:null};
+  const r=loc();if(r||!FS.ready)return r;const M=FS.m;
+  for(const [t,col,f] of [['user','users','pid'],['class','classes','code'],['exam','exams','code']]){
+    try{const q=await M.getDocs(M.query(M.collection(FS.db,col),M.where(f,'==',c)));if(!q.empty){const d=q.docs[0],v=fixDoc(col,d.data());db[col][d.id]=v;synced[col+'/'+d.id]=sig(col,v);return{t,v}}}catch(e){console.warn('findCode',col,e.code)}}
+  return null}
+async function needCode(inp,type){const r=await findCode(inp);if(!r){toast('Không tìm thấy ID "'+String(inp).trim()+'". Kiểm tra lại rồi thử lại.','error');return null}
+  if(r.t!==type){toast('Đây là '+TN[r.t]+', không phải '+TN[type],'error');return null}return r.v}
+function cleanImg(u){u=String(u??'').trim();if(!u)return '';const m=u.match(/drive\.google\.com\/(?:file\/d\/|open\?id=|uc\?(?:[^#]*&)?id=)([\w-]+)/);if(m)return 'https://lh3.googleusercontent.com/d/'+m[1];return /^(https?:\/\/|data:image\/)/i.test(u)?u:''}
+async function pushKeys(){if(!FS.ready)return;const a=ksAll();for(const e of Object.values(db.exams))if(e.teacherId===me&&a[e.id]){try{await FS.m.setDoc(FS.m.doc(FS.db,'examKeys',e.id),{...a[e.id],teacherId:me})}catch(x){console.warn('pushKeys',x.code)}}}
 
 function seed(){
   const mk=(id,pid,name,email,role,note,friends)=>({uid:id,pid,name,email,role,note,avatar:'',friends,requests:[],demo:true});
@@ -200,8 +274,8 @@ function seed(){
 }
 
 /* ---- Tách đề thi: bản công khai (không đáp án) + khóa đáp án ---- */
-function splitExam(e){const pub={...e,questions:[]},key={q:[]};delete pub._cid;
-  e.questions.forEach(q=>{const p={type:q.type,text:q.text,img:q.img||''},k={explanation:q.explanation||''};
+function splitExam(e){const pub={...e,questions:[]},key={q:[]};delete pub._cid;delete pub._pw;
+  e.questions.forEach(q=>{const p={type:q.type,text:q.text,img:q.img||'',level:q.level||1},k={explanation:q.explanation||''};
     if(q.type==='mc'){p.opts=[...q.opts];k.correct=q.correct}
     else if(q.type==='tf')k.correct=!!q.correct;
     else if(q.type==='match'){const ord=seedShuffle(q.pairs.length,e.id+q.text);p.lefts=q.pairs.map(x=>x.l);p.rights=ord.map(j=>q.pairs[j].r);k.map=q.pairs.map((_,i)=>ord.indexOf(i))}
@@ -209,7 +283,7 @@ function splitExam(e){const pub={...e,questions:[]},key={q:[]};delete pub._cid;
     pub.questions.push(p);key.q.push(k)});
   return {pub,key}}
 function mergeExam(pub,key){const e=JSON.parse(JSON.stringify(pub));
-  e.questions=e.questions.map((p,i)=>{const k=(key&&key.q[i])||{},q={type:p.type,text:p.text,img:p.img||'',explanation:k.explanation||''};
+  e.questions=e.questions.map((p,i)=>{const k=(key&&key.q[i])||{},q={type:p.type,text:p.text,img:p.img||'',level:p.level||1,explanation:k.explanation||''};
     if(p.type==='mc'){q.opts=p.opts;q.correct=k.correct??0}
     else if(p.type==='tf')q.correct=k.correct!==false;
     else if(p.type==='match')q.pairs=p.lefts.map((l,j)=>({l,r:p.rights[k.map?k.map[j]:j]}));
@@ -222,47 +296,54 @@ function gradeQ(p,k,a){if(!answered(a))return null;
   if(p.type==='mc'||p.type==='tf')return a===k.correct;
   if(p.type==='short')return typeof a==='string'&&String(k.answers).split('|').some(x=>norm(x)&&norm(x)===norm(a));
   return !!k.map&&k.map.every((m,i)=>a[i]===m)}
-function keyText(p,k){if(p.type==='mc')return 'ABCD'[k.correct]+'. '+p.opts[k.correct];if(p.type==='tf')return k.correct?'Đúng':'Sai';if(p.type==='short')return String(k.answers).split('|')[0];return p.lefts.map((l,i)=>l+' → '+p.rights[k.map[i]]).join('; ')}
-function ansText(p,a){if(!answered(a))return '';if(p.type==='mc')return 'ABCD'[a]+'. '+p.opts[a];if(p.type==='tf')return a?'Đúng':'Sai';if(p.type==='short')return String(a);return p.lefts.map((l,i)=>l+' → '+(a[i]!==undefined?p.rights[a[i]]:'?')).join('; ')}
-async function gradeLocal(exam,ans){const key=await KeyStore.get(exam.id);if(!key)throw new Error('máy chủ chấm điểm chưa có đáp án của đề này');
-  const detail=exam.questions.map((p,i)=>{const k=key.q[i]||{};return {r:gradeQ(p,k,ans[i]),a:ansText(p,ans[i]),c:keyText(p,k),x:k.explanation||''}});
+function keyText(p,k,nl){if(p.type==='mc')return (nl?'':'ABCD'[k.correct]+'. ')+p.opts[k.correct];if(p.type==='tf')return k.correct?'Đúng':'Sai';if(p.type==='short')return String(k.answers).split('|')[0];return p.lefts.map((l,i)=>l+' → '+p.rights[k.map[i]]).join('; ')}
+function ansText(p,a,nl){if(!answered(a))return '';if(p.type==='mc')return (nl?'':'ABCD'[a]+'. ')+p.opts[a];if(p.type==='tf')return a?'Đúng':'Sai';if(p.type==='short')return String(a);return p.lefts.map((l,i)=>l+' → '+(a[i]!==undefined?p.rights[a[i]]:'?')).join('; ')}
+async function gradeLocal(exam,ans,order){const key=await KeyStore.get(exam.id);if(!key)throw new Error('máy chủ chấm điểm chưa có đáp án của đề này');
+  const detail=(order&&order.length?order:exam.questions.map((_,i)=>i)).map(i=>{const p=exam.questions[i],k=key.q[i]||{};return {qi:i,lv:p.level||1,r:gradeQ(p,k,ans[i]),a:ansText(p,ans[i],exam.shuffleOpts),c:keyText(p,k,exam.shuffleOpts),x:k.explanation||'',t:p.text,y:p.type}});
   const total=detail.length,correct=detail.filter(d=>d.r).length,score=Math.round(correct/total*100)/10;
   return {score,correct,total,pass:score>=exam.pass,detail}}
 const ksAll=()=>{try{return JSON.parse(localStorage.getItem(KS_K))||{}}catch(e){return{}}};
-const KeyStore={ /* nơi DUY NHẤT giữ đáp án */
-  async get(id){if(cloud())return (await FS.m.getDoc(FS.m.doc(FS.db,'examKeys',id))).data()||null;return ksAll()[id]||null},
-  async set(id,k){if(cloud())return FS.m.setDoc(FS.m.doc(FS.db,'examKeys',id),{...k,teacherId:me});const a=ksAll();a[id]=k;localStorage.setItem(KS_K,JSON.stringify(a))},
-  async del(id){if(cloud())return FS.m.deleteDoc(FS.m.doc(FS.db,'examKeys',id));const a=ksAll();delete a[id];localStorage.setItem(KS_K,JSON.stringify(a))}};
+const KeyStore={ /* v5: đáp án luôn được lưu cả trên máy lẫn Firestore `examKeys` */
+  async get(id){if(FS.ready){try{const s=await FS.m.getDoc(FS.m.doc(FS.db,'examKeys',id));if(s.exists()){const k=s.data(),a=ksAll();a[id]=k;try{localStorage.setItem(KS_K,JSON.stringify(a))}catch(e){}return k}}catch(e){if(cloud())throw e;console.warn('examKeys',e.code)}}return cloud()?null:(ksAll()[id]||null)},
+  async set(id,k){if(!cloud()){const a=ksAll();a[id]=k;localStorage.setItem(KS_K,JSON.stringify(a))}if(FS.ready)await FS.m.setDoc(FS.m.doc(FS.db,'examKeys',id),{...k,teacherId:me})},
+  async del(id){if(!cloud()){const a=ksAll();delete a[id];localStorage.setItem(KS_K,JSON.stringify(a))}if(FS.ready)return FS.m.deleteDoc(FS.m.doc(FS.db,'examKeys',id))}};
 const Grader={async grade(e,d,key){
   if(cloud()){if(!FS.call)throw new Error('chưa tải được Cloud Functions');return (await FS.call('submitExam',{examId:e.id,draftKey:key,answers:d.ans,viol:d.viol||0,vlog:d.vlog||[]})).data}
-  const g=await gradeLocal(e,d.ans);return {id:uid(),examId:e.id,teacherId:e.teacherId,title:e.title,studentId:me,...g,answers:d.ans,viol:d.viol||0,vlog:d.vlog||[],at:now()}}};
+  const g=await gradeLocal(e,d.ans,d.order);return {id:uid(),examId:e.id,teacherId:e.teacherId,title:e.title,studentId:me,...g,answers:d.ans,viol:d.viol||0,vlog:d.vlog||[],at:now()}}};
 
 /* ---- Nạp dữ liệu (tự chuyển đề kiểu cũ: tách đáp án ra KeyStore) ---- */
 function loadDB(){let d=null;try{d=JSON.parse(localStorage.getItem(K)||localStorage.getItem('lmsv1_db')||'null')}catch(e){}
-  d=d||seed();Object.keys(COLS).forEach(k=>d[k]=d[k]||{});const ks=ksAll();let dirty=false;
+  d=d||seed();Object.keys(COLS).forEach(k=>d[k]=d[k]||{});Object.values(d.users).forEach(v=>fixDoc('users',v));Object.values(d.classes).forEach(v=>fixDoc('classes',v));const ks=ksAll();let dirty=false;
   for(const e of Object.values(d.exams))if(e.questions.some(q=>'correct' in q||'answers' in q||'pairs' in q)){const {pub,key}=splitExam(e);d.exams[e.id]=pub;ks[e.id]=key;dirty=true}
   if(dirty)localStorage.setItem(KS_K,JSON.stringify(ks));return d}
 let db=loadDB();
 
 /* ---- Đồng bộ Firestore theo từng collection (so sánh JSON, chỉ ghi tài liệu thay đổi) ---- */
 const save=()=>{try{localStorage.setItem(K,JSON.stringify(db))}catch(e){}if(FS.ready){clearTimeout(FS.t);FS.t=setTimeout(syncOut,500)}};
-function syncOut(){const M=FS.m;if(!FS.ready)return;
+function syncOut(){const M=FS.m;if(!FS.ready)return;let fail=false;
   for(const [k,col] of Object.entries(COLS)){const cur=db[k]||{};
-    for(const id in cur){const j=JSON.stringify(cur[id]),p=col+'/'+id;if(synced[p]!==j){synced[p]=j;M.setDoc(M.doc(FS.db,col,id),JSON.parse(j)).catch(e=>{console.warn('Không ghi được',p,e.code);toast('Không đồng bộ được '+p+' ('+e.code+')','error')})}}
+    for(const id in cur){const j=sig(col,cur[id]),p=col+'/'+id;if(synced[p]!==j){const first=!(p in synced);synced[p]=j;
+      const data=JSON.parse(JSON.stringify(cur[id]));if(!first&&SH[col])SH[col].forEach(f=>delete data[f]);
+      M.setDoc(M.doc(FS.db,col,id),data,SH[col]?{merge:true}:undefined).catch(e=>{synced[p]='!';fail=true;console.warn('Không ghi được',p,e.code);toast('Chưa đồng bộ được '+p+' ('+e.code+') – sẽ tự thử lại','error');clearTimeout(FS.rt);FS.rt=setTimeout(syncOut,4000)})}}
     for(const p in synced)if(p.startsWith(col+'/')&&!((p.slice(col.length+1)) in cur)){delete synced[p];M.deleteDoc(M.doc(FS.db,col,p.slice(col.length+1))).catch(e=>console.warn('Không xóa được',p,e.code))}}}
 function applySnap(k,s){const c=COLS[k];let ch=false;
-  s.docChanges().forEach(x=>{const id=x.doc.id,p=c+'/'+id;ch=true;if(x.type==='removed'){delete db[k][id];delete synced[p]}else{const v=x.doc.data();db[k][id]=v;synced[p]=JSON.stringify(v)}});
+  s.docChanges().forEach(x=>{const id=x.doc.id,p=c+'/'+id;ch=true;if(x.type==='removed'){delete db[k][id];delete synced[p]}else{const v=fixDoc(c,x.doc.data()),old=db[k][id];if(k==='drafts'&&T&&id===T.key&&v.forceSubmit)T.force=1;
+    const dirty=old&&(p in synced)&&sig(c,old)!==synced[p];  // máy đang có thay đổi chưa đẩy lên → giữ phần đó, chỉ lấy phần dùng chung từ máy chủ
+    if(dirty)db[k][id]={...v,...Object.fromEntries(Object.entries(old).filter(([f])=>!(SH[c]||[]).includes(f)))};else{db[k][id]=v;synced[p]=sig(c,v)}}});
   if(k==='users'&&FS.resUsers){FS.resUsers();FS.resUsers=null}
   if(!ch)return;try{localStorage.setItem(K,JSON.stringify(db))}catch(e){}
-  if(!s.metadata.hasPendingWrites&&!['take','editor'].includes(S.view)&&!$('#mdl'))render()}
-function startSync(u){if(FS.ready)return;FS.ready=true;fbUser=u;const M=FS.m,C=n=>M.collection(FS.db,n),g='g_'+u.uid;
-  for(const [k,c] of Object.entries(COLS))for(const id in db[k])synced[c+'/'+id]=JSON.stringify(db[k][id]); // dữ liệu đã có sẵn trên máy không bị đẩy ngược lên
+  if(!s.metadata.hasPendingWrites&&!['take','editor'].includes(S.view)&&!$('#mdl')&&!/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement||{}).tagName||''))render()}
+function startSync(u){if(FS.ready)return;FS.ready=true;fbUser=u;for(const i of ['t_demo','s_an','s_binh'])delete db.users[i];delete db.classes.c1;delete db.exams.e1; // bỏ dữ liệu demo khi online để mã #ktra10001/#lop10001 không khớp nhầm
+  const M=FS.m,C=n=>M.collection(FS.db,n),g='g_'+u.uid;
+  for(const [k,c] of Object.entries(COLS))for(const id in db[k])synced[c+'/'+id]=sig(c,db[k][id]); // dữ liệu đã có sẵn trên máy không bị đẩy ngược lên
   FS.usersReady=new Promise(r=>FS.resUsers=r);
   const ls=(k,q)=>FS.un.push(M.onSnapshot(q,s=>applySnap(k,s),e=>console.warn('Firestore',k,e.code)));
   ls('users',C('users'));ls('classes',C('classes'));ls('exams',C('exams'));
   ls('subs',M.query(C('submissions'),M.where('studentId','==',g)));ls('subs',M.query(C('submissions'),M.where('teacherId','==',g)));
-  ls('drafts',M.query(C('drafts'),M.where('uid','==',g)));syncClock()}
-async function endSync(){FS.un.forEach(f=>f());FS.un=[];FS.ready=false;for(const k in synced)delete synced[k];try{if(fbAuth)await fbAuth.signOut()}catch(e){}}
+  ls('drafts',M.query(C('drafts'),M.where('uid','==',g)));syncClock();pushKeys();setTimeout(pushKeys,5000);beat();FS.hb=setInterval(beat,30000)}
+function beat(){if(!FS.ready||!fbUser)return;FS.m.setDoc(FS.m.doc(FS.db,'presence',fbUser.uid),{seen:now(),name:(U()&&U().name)||''}).catch(()=>{})}
+async function endSync(keep){try{if(FS.ready&&fbUser)await FS.m.setDoc(FS.m.doc(FS.db,'presence',fbUser.uid),{seen:0})}catch(e){}
+  clearInterval(FS.hb);clearInterval(FS.rtk);FS.wr=0;FS.wl=0;FS.un.forEach(f=>f());FS.un=[];FS.ready=false;for(const k in synced)delete synced[k];try{if(fbAuth&&!keep)await fbAuth.signOut()}catch(e){}}
 function trySync(){if(fbUser&&FS.m&&!FS.ready&&me&&me==='g_'+fbUser.uid)startSync(fbUser)}
 /* Giờ máy chủ: ghi serverTimestamp rồi đọc lại từ server → chống đổi giờ thiết bị */
 async function syncClock(){if(!FS.ready)return;try{const r=FS.m.doc(FS.db,'_clock',fbUser.uid);
@@ -273,16 +354,37 @@ const FB='https://www.gstatic.com/firebasejs/10.12.2/';
 import(FB+'firebase-app.js').then(async fb=>{
   const app=fb.initializeApp({apiKey:"AIzaSyB10Lf79mnOr6Y-V7zFxkmUQOWcIeLdONM",authDomain:"quan-li-kiem-tra-72e40.firebaseapp.com",projectId:"quan-li-kiem-tra-72e40",storageBucket:"quan-li-kiem-tra-72e40.firebasestorage.app",messagingSenderId:"312064549331",appId:"1:312064549331:web:79cdfc1398cf8248f08f26",measurementId:"G-EJ0WVZNSD4"});
   const [fsM,au]=await Promise.all([import(FB+'firebase-firestore.js'),import(FB+'firebase-auth.js')]);
-  FS.m=fsM;FS.db=fsM.getFirestore(app);fbAuth=au.getAuth(app);GoogleProvider=new au.GoogleAuthProvider();signInPopup=au.signInWithPopup;
+  FS.m=fsM;FS.db=fsM.getFirestore(app);fbAuth=au.getAuth(app);GoogleProvider=new au.GoogleAuthProvider();signInPopup=au.signInWithPopup;signAnon=au.signInAnonymously;
   if(CFG.GRADING==='cloud'){const fn=await import(FB+'firebase-functions.js'),f=fn.getFunctions(app);FS.call=(n,d)=>fn.httpsCallable(f,n)(d)}
-  au.onAuthStateChanged(fbAuth,u=>{fbUser=u;trySync()});
+  au.onAuthStateChanged(fbAuth,u=>{fbUser=u;if(me&&me.startsWith('g_')&&(!u||me!=='g_'+u.uid)){stopTake();me=null;localStorage.removeItem(SK)}trySync();if(!me)render()});
 }).catch(e=>console.warn('Chạy chế độ offline:',e));
 
+async function loginRoster(){const nc=ncode($('#rc').value),nm=String($('#rn').value||'').trim();
+  if(!nc||!nn(nm))return toast('Nhập đủ mã và họ tên','error');
+  if(!fbAuth||!FS.m||!signAnon)return toast('Đang kết nối máy chủ, vui lòng thử lại sau 2 giây…','info');
+  const M=FS.m,bad=()=>toast('Mã hoặc họ tên không đúng','error');
+  try{let cu=fbAuth.currentUser;
+    if(cu&&cu.isAnonymous){const x=await M.getDocFromServer(M.doc(FS.db,'users','g_'+cu.uid)).catch(()=>null);if(x&&x.exists()&&x.data().rid&&x.data().rid!==nc){await fbAuth.signOut();cu=null}}
+    if(!cu||!cu.isAnonymous){if(cu)await fbAuth.signOut();cu=(await signAnon(fbAuth)).user}
+    const rs=await M.getDocFromServer(M.doc(FS.db,'rcodes',nc));
+    if(!rs.exists()||rs.data().h!==hash(nn(nm)+'|'+nc))return bad();
+    const rc=rs.data(),id='g_'+cu.uid,cref=M.doc(FS.db,'classes',rc.classId),uref=M.doc(FS.db,'users',id);
+    const us=await M.getDocFromServer(uref);let u;
+    if(us.exists()){u=fixDoc('users',us.data());if(u.rid!==nc||u.role!=='student'){u.rid=nc;u.role='student';await M.updateDoc(uref,{rid:nc,role:'student'})}}
+    else{u={uid:id,name:nm,email:'',role:'student',note:'',avatar:'',friends:[],requests:[],rid:nc};await M.setDoc(uref,u)}
+    if(rc.uid&&rc.uid!==cu.uid)await M.updateDoc(cref,{students:M.arrayRemove('g_'+rc.uid)}).catch(()=>{});
+    await M.updateDoc(M.doc(FS.db,'rcodes',nc),{uid:cu.uid});
+    await M.updateDoc(cref,{students:M.arrayUnion(id)});
+    const cs=await M.getDoc(cref);if(cs.exists())db.classes[rc.classId]=fixDoc('classes',cs.data());
+    db.users[id]=u;fbUser=cu;me=id;localStorage.setItem(SK,id);trySync();toast('Xin chào '+u.name+'!','success');login(id);
+  }catch(e){console.warn('loginRoster',e);toast(e.code==='auth/operation-not-allowed'||e.code==='auth/admin-restricted-operation'?'Chưa bật đăng nhập Ẩn danh (Anonymous) trong Firebase Authentication':'Không đăng nhập được ('+(e.code||e.message)+')','error')}}
 window.loginWithGoogle=function(){
   if(!signInPopup||!fbAuth)return toast('Đang kết nối máy chủ Google, vui lòng thử lại sau 2 giây...','info');
   signInPopup(fbAuth,GoogleProvider).then(async r=>{const u=r.user,id='g_'+u.uid;fbUser=u;me=id;localStorage.setItem(SK,id);trySync();
-    await Promise.race([FS.usersReady,new Promise(f=>setTimeout(f,5000))]); // đợi tải hồ sơ cũ để không ghi đè tài khoản đã có
-    if(!db.users[id]){db.users[id]={uid:id,name:u.displayName||(u.email?u.email.split('@')[0]:'Người dùng'),email:u.email||'',role:null,note:'',avatar:u.photoURL||'',friends:[],requests:[]};save()}
+    let sv=null;try{const q=await FS.m.getDocFromServer(FS.m.doc(FS.db,'users',id));sv=q.exists()?q.data():null}
+    catch(e){await endSync();me=null;localStorage.removeItem(SK);return toast('Không tải được hồ sơ từ máy chủ nên chưa đăng nhập (để ID không bị tạo lại). Hãy thử lại.','error')}
+    if(sv){fixDoc('users',sv);db.users[id]=sv;synced['users/'+id]=sig('users',sv)}
+    else{db.users[id]={uid:id,name:u.displayName||(u.email?u.email.split('@')[0]:'Người dùng'),email:'',role:null,note:'',avatar:u.photoURL||'',friends:[],requests:[]};save()}
     toast('Đăng nhập Google thành công!','success');login(id);
   }).catch(err=>toast('Lỗi đăng nhập Google: '+err.message,'error'));
 };
@@ -294,29 +396,37 @@ let S={view:'home',arg:null,auth:'login'},E=null,T=null;
 /* ============ 2. KHỐI AUTH & PROFILE ============ */
 function authV(){const reg=S.auth==='reg';
 return `<div class="min-h-screen grid place-items-center p-4 relative overflow-hidden"><i class="blob bg-indigo-500" style="width:380px;height:380px;left:-80px;top:-60px"></i><i class="blob bg-pink-400" style="width:320px;height:320px;right:-60px;top:20%;animation-delay:-3s"></i><i class="blob bg-emerald-400" style="width:340px;height:340px;left:35%;bottom:-120px;animation-delay:-6s"></i><div class="relative pop bg-white/80 backdrop-blur-xl border border-white rounded-3xl shadow-2xl p-8 w-full max-w-md">
-<div class="text-center mb-5"><div class="text-4xl">🎓</div><h1 class="text-2xl font-extrabold">EduTest LMS</h1><p class="text-sm text-slate-500">Kiểm tra &amp; quản lý lớp học trực tuyến</p></div>
+<div class="text-center mb-5"><div class="text-4xl">${ic("cap")}</div><h1 class="text-2xl font-extrabold">EduTest LMS</h1><p class="text-sm text-slate-500">Kiểm tra &amp; quản lý lớp học trực tuyến</p></div>
 <button class="btn g w-full" onclick="loginWithGoogle()"><b class="text-rose-500">G</b> Tiếp tục với Google</button>
+<details class="mt-4"><summary class="text-sm font-semibold text-indigo-600 cursor-pointer text-center">🔑 Không có Google? Vào bằng mã do cô phát</summary><div class="mt-3"><input id="rc" class="inp mb-2" placeholder="Mã học sinh (cô đã phát)" autocomplete="off"><input id="rn" class="inp mb-2" placeholder="Họ và tên đầy đủ" autocomplete="off" onkeydown="if(event.key===\'Enter\')loginRoster()"><button class="btn p w-full" onclick="loginRoster()">Vào lớp</button><p class="text-xs text-slate-400 mt-1">Phải đúng cả mã lẫn họ tên (không phân biệt hoa/thường, có dấu hay không).</p></div></details>
 <p class="text-center text-sm mt-3 text-slate-500">${reg?'Đã có tài khoản?':'Chưa có tài khoản?'} <a class="text-indigo-600 font-semibold cursor-pointer" onclick="S.auth='${reg?'login':'reg'}';render()">${reg?'Đăng nhập':'Đăng ký'}</a></p>
-<div class="mt-5 pt-4 border-t"><p class="text-xs font-bold text-amber-600 mb-2">🧪 ĐĂNG NHẬP OFFLINE (để test, không cần máy chủ)</p>
-<div class="grid grid-cols-2 gap-2"><button class="btn s sm" onclick="login('t_demo')">👩‍🏫 Vào là Giáo viên</button><button class="btn s sm" onclick="login('s_an')">🧑‍🎓 Vào là Học sinh</button></div></div></div></div>`}
+${false?'':`<div class="mt-5 pt-4 border-t"><p class="text-xs font-bold text-amber-600 mb-2">🧪 ĐĂNG NHẬP OFFLINE (để test, không cần máy chủ)</p>
+<div class="grid grid-cols-2 gap-2"><button class="btn s sm" onclick="login('t_demo')">👩‍🏫 Vào là Giáo viên</button><button class="btn s sm" onclick="login('s_an')">🧑‍🎓 Vào là Học sinh</button></div></div>`}</div></div>`}
 function login(id){me=id;localStorage.setItem(SK,id);S={view:'home',arg:null,auth:'login'};HI=0;history.replaceState({v:'home',a:null,i:0},'','#home');render()}
-async function logout(){stopTake();const on=FS.ready;await endSync();me=null;localStorage.removeItem(SK);
-  if(on){Object.keys(localStorage).filter(k=>k.startsWith('lmsv4_')&&k!==KS_K).forEach(k=>localStorage.removeItem(k));location.reload();return} // máy dùng chung: xóa bộ nhớ đệm
+async function logout(){stopTake();const on=FS.ready,keep=U()&&U().rid;if(on&&U()&&U().role==='teacher')await pushKeys();await endSync(keep);me=null;localStorage.removeItem(SK);
+  if(on){Object.keys(localStorage).filter(k=>k.startsWith('lmsv4_')).forEach(k=>localStorage.removeItem(k));location.reload();return} // máy dùng chung: xóa bộ nhớ đệm
   render()}
 function switchTo(id){stopTake();login(id)}
 function roleV(){return `<div class="min-h-screen grid place-items-center p-4"><div class="max-w-xl w-full text-center"><h1 class="text-2xl font-extrabold mb-1">Chào ${esc(U().name)}!</h1><p class="text-slate-500 mb-6">Bạn muốn sử dụng nền tảng với vai trò nào? (có thể đổi lại trong Cài đặt)</p>
-<div class="grid sm:grid-cols-2 gap-4"><button onclick="setRole('teacher')" class="card hover:ring-2 ring-indigo-500 text-center"><div class="text-5xl">👩‍🏫</div><b class="block mt-2">Giáo viên</b><span class="text-xs text-slate-500">Tạo lớp, soạn đề, giao bài</span></button>
-<button onclick="setRole('student')" class="card hover:ring-2 ring-indigo-500 text-center"><div class="text-5xl">🧑‍🎓</div><b class="block mt-2">Học sinh</b><span class="text-xs text-slate-500">Vào lớp, làm bài kiểm tra</span></button></div></div></div>`}
-function setRole(r){const u=U(),pre=r==='teacher'?'gv':'hs';if(u.role!==r||!u.pid){let c=u.pid?'#'+pre+u.pid.slice(-5):null;const all=Object.values(db.users).filter(x=>x.uid!==u.uid).map(x=>x.pid||'');if(!c||all.some(x=>x.toLowerCase()===c))c=genId(pre,all);u.pid=c}u.role=r;save();toast('Đã chọn vai trò: '+(r==='teacher'?'Giáo viên':'Học sinh'),'success');go('home',null,1)}
+<div class="grid sm:grid-cols-2 gap-4"><button onclick="setRole('teacher')" class="card hover:ring-2 ring-indigo-500 text-center"><div class="text-5xl">${ic("present")}</div><b class="block mt-2">Giáo viên</b><span class="text-xs text-slate-500">Tạo lớp, soạn đề, giao bài</span></button>
+<button onclick="setRole('student')" class="card hover:ring-2 ring-indigo-500 text-center"><div class="text-5xl">${ic("student")}</div><b class="block mt-2">Học sinh</b><span class="text-xs text-slate-500">Vào lớp, làm bài kiểm tra</span></button></div></div></div>`}
+async function setRole(r,quiet){const u=U(),pre=r==='teacher'?'gv':'hs';
+  if(!u.pid){let c;for(let i=0;i<8;i++){c=genId(pre,Object.values(db.users).map(x=>x.pid||''));if(!FS.ready||!(await findCode(c)))break}u.pid=c} // ID chỉ tạo 1 lần, không đổi khi đổi vai trò/đăng nhập lại
+  u.role=r;save();if(FS.ready)syncOut();if(quiet){render();return}toast('Đã chọn vai trò: '+(r==='teacher'?'Giáo viên':'Học sinh'),'success');go('home',null,1)}
+const TF=[['school','Trường / Đơn vị công tác','school'],['dept','Tổ chuyên môn','users'],['subject','Môn giảng dạy','book'],['title','Chức vụ / Trình độ chuyên môn','cap'],['phone','Số điện thoại / Zalo liên hệ','phone'],['contactEmail','Email công vụ','mail']];
+const teacherSummary=u=>`<div class="mt-4 pt-4 border-t text-left space-y-2">${TF.filter(([k])=>u[k]).map(([k,l,i])=>`<div class="flex items-start gap-2 text-sm text-slate-700"><span class="mt-0.5">${ic(i)}</span><span><span class="block text-[11px] uppercase tracking-wide text-slate-400">${l}</span>${esc(u[k])}</span></div>`).join('')||'<p class="text-xs text-slate-400">Giáo viên chưa cập nhật thông tin chuyên môn</p>'}</div>`;
+const teacherFields=u=>`<div class="grid sm:grid-cols-2 gap-x-3">${TF.map(([k,l])=>`<div><label class="text-xs font-bold text-slate-500">${l}</label><input id="tf_${k}" class="inp mb-3" maxlength="120" value="${esc(u[k]||'')}"></div>`).join('')}</div>`;
+const teacherStrip=(tu,c)=>{if(!tu)return '';const bits=[tu.school,tu.subject&&'Môn '+tu.subject,tu.dept,tu.title].filter(Boolean),ct=[tu.phone,tu.contactEmail].filter(Boolean);
+  return `<div class="mt-3 p-3 rounded-lg bg-slate-50 border border-slate-200 flex items-center gap-3 cursor-pointer" onclick="go('profile','${tu.uid}')">${av(tu,40)}<div class="min-w-0 flex-1"><div class="font-semibold text-sm">${esc(tu.name)} <span class="text-xs font-normal text-slate-400">${esc(tu.pid||'')}</span></div><div class="text-xs text-slate-500 truncate">${bits.length?esc(bits.join(' · ')):'Giáo viên phụ trách lớp'}</div>${ct.length?`<div class="text-xs text-slate-500 truncate">${ic('phone')} ${esc(ct.join(' · '))}</div>`:''}</div><span class="text-xs text-slate-400 whitespace-nowrap">${c.students.length} học sinh</span></div>`};
 function profileV(){const id=S.arg||me,u=db.users[id],own=id===me;if(!u)return '<p>Không tìm thấy</p>';
   return `<div class="grid md:grid-cols-3 gap-5"><div class="card text-center">${av(u,96)}<h2 class="text-xl font-extrabold mt-3">${esc(u.name)}</h2><span class="bd ${u.role==='teacher'?'bg-violet-100 text-violet-700':'bg-sky-100 text-sky-700'}">${u.role==='teacher'?'Giáo viên':'Học sinh'}</span>
-<div class="mt-2"><span class="bd bg-slate-100 text-slate-600">${esc(u.pid||"")}</span></div><p class="text-slate-600 italic mt-3">${u.note?'“'+esc(u.note)+'”':'Chưa có tiểu sử'}</p><p class="text-xs text-slate-400 mt-2">${u.friends.length} kết nối</p>${own?'':friendBtn(id)}</div>
+<div class="mt-2"><span class="bd bg-slate-100 text-slate-600">${esc(u.pid||"")}</span></div><p class="text-slate-600 italic mt-3">${u.note?'“'+esc(u.note)+'”':'Chưa có tiểu sử'}</p>${u.role==='teacher'?teacherSummary(u):''}<p class="text-xs text-slate-400 mt-2">${u.friends.length} kết nối</p>${own?'':friendBtn(id)}</div>
 ${own?`<div class="card md:col-span-2"><h3 class="h2">Chỉnh sửa hồ sơ</h3><label class="text-xs font-bold text-slate-500">Tên hiển thị</label><input id="pn" class="inp mb-3" value="${esc(u.name)}">
 <label class="text-xs font-bold text-slate-500">Note / Tiểu sử (hiển thị công khai)</label><input id="pt" class="inp mb-3" maxlength="120" value="${esc(u.note)}">
-<label class="text-xs font-bold text-slate-500">Ảnh đại diện</label><input type="file" accept="image/*" class="block mb-4 text-sm" onchange="upAvatar(this)">
+${u.role==='teacher'?'<h4 class="text-sm font-bold text-slate-700 mt-1 mb-2">Thông tin chuyên môn (học sinh trong lớp sẽ thấy)</h4>'+teacherFields(u):''}<label class="text-xs font-bold text-slate-500">Ảnh đại diện</label><input type="file" accept="image/*" class="block mb-4 text-sm" onchange="upAvatar(this)">
 <button class="btn p" onclick="saveProfile()">Lưu hồ sơ</button></div>`:`<div class="card md:col-span-2"><h3 class="h2">Bạn bè / kết nối</h3>${u.friends.map(f=>db.users[f]).filter(Boolean).map(f=>`<span class="inline-flex items-center gap-2 mr-3 mb-2 cursor-pointer" onclick="go('profile','${f.uid}')">${av(f,28)}${esc(f.name)}</span>`).join('')||'<p class="text-slate-400">Chưa có</p>'}</div>`}</div>`}
-async function upAvatar(i){if(i.files[0]){U().avatar=await comp(i.files[0],200);save();toast('Đã cập nhật ảnh','success');render()}}
-function saveProfile(){const n=$('#pn').value.trim();if(!n)return toast('Tên không được trống','error');U().name=n;U().note=$('#pt').value.trim();save();toast('Đã lưu hồ sơ','success');render()}
+async function upAvatar(i){if(i.files[0]){const d=await comp(i.files[0],200);if(!d)return toast('Không đọc được ảnh này','error');U().avatar=d;save();toast('Đã cập nhật ảnh','success');render()}}
+function saveProfile(){const n=$('#pn').value.trim();if(!n)return toast('Tên không được trống','error');U().name=n;U().note=$('#pt').value.trim();if(U().role==='teacher')TF.forEach(([k])=>{const el=$('#tf_'+k);if(el)U()[k]=el.value.trim()});save();toast('Đã lưu hồ sơ','success');render()}
 
 /* ============ 3. KẾT NỐI (bạn bè) ============ */
 function friendBtn(id){const u=U(),o=db.users[id];
@@ -324,12 +434,12 @@ function friendBtn(id){const u=U(),o=db.users[id];
   if(u.requests.includes(id))return `<button class="btn s sm" onclick="acceptF('${id}')">Chấp nhận</button>`;
   if(o.requests.includes(me))return '<span class="bd bg-slate-100 text-slate-500">Đã gửi lời mời</span>';
   return `<button class="btn p sm" onclick="reqF('${id}')">＋ Kết bạn</button>`}
-function reqF(id){db.users[id].requests.push(me);save();toast('Đã gửi lời mời','success');render()}
-function acceptF(id){const u=U();u.requests=u.requests.filter(x=>x!==id);u.friends.push(id);db.users[id].friends.push(me);save();toast('Đã kết nối','success');render()}
-function addFriendId(){const x=byPid($('#fid').value),u=U();if(!x)return toast('Không tìm thấy ID này','error');if(x.uid===me)return toast('Đây là ID của bạn','info');
-  if(u.friends.includes(x.uid))return toast('Đã là bạn bè','info');if(u.requests.includes(x.uid))return acceptF(x.uid);if(x.requests.includes(me))return toast('Đã gửi lời mời trước đó','info');reqF(x.uid)}
-function declineF(id){U().requests=U().requests.filter(x=>x!==id);save();render()}
-async function unfriend(id){if(!await ask('Hủy kết nối này?'))return;U().friends=U().friends.filter(x=>x!==id);db.users[id].friends=db.users[id].friends.filter(x=>x!==me);save();render()}
+function reqF(id){arr('users',id,'requests','add',me);toast('Đã gửi lời mời','success');render()}
+function acceptF(id){arr('users',me,'requests','remove',id);arr('users',me,'friends','add',id);arr('users',id,'friends','add',me);toast('Đã kết nối','success');render()}
+async function addFriendId(){const x=await needCode($('#fid').value,'user'),u=U();if(!x)return;if(x.uid===me)return toast('Đây là ID của bạn','info');
+  if(u.friends.includes(x.uid))return toast('Đã là bạn bè','info');if(u.requests.includes(x.uid))return acceptF(x.uid);if((x.requests||[]).includes(me))return toast('Đã gửi lời mời trước đó','info');reqF(x.uid)}
+function declineF(id){arr('users',me,'requests','remove',id);render()}
+async function unfriend(id){if(!await ask('Hủy kết nối này?'))return;arr('users',me,'friends','remove',id);arr('users',id,'friends','remove',me);render()}
 function peopleV(){const q=norm(S.q||'');const u=U();
   const list=Object.values(db.users).filter(x=>vis(x)&&(!q||norm(x.name).includes(q)));
   return `<div class="grid md:grid-cols-3 gap-5"><div class="md:col-span-2 card"><h3 class="h2">Kết bạn bằng ID</h3><div class="flex gap-2 mb-5"><input id="fid" class="inp" placeholder="Nhập ID, ví dụ #hs10001 hoặc #gv10001" onkeydown="if(event.key==='Enter')addFriendId()"><button class="btn p" onclick="addFriendId()">Gửi lời mời</button></div><h3 class="h2">Tìm theo tên</h3><input class="inp mb-3" placeholder="Tìm theo tên…" value="${esc(S.q||'')}" oninput="S.q=this.value;peopleList()">
@@ -346,22 +456,31 @@ function go(v,a,rep){if(v!=='take')stopTake();if(v==='class'&&S._cl!==a){S.ctab=
   render();scrollTo(0,0)}
 function back(){history.state&&history.state.i>0?history.back():go('home',null,1)}
 function applyState(st){closeModal();let v=(st&&st.v)||'home',a=(st&&st.a)||null;HI=(st&&st.i)||0;
-  if(T&&v!=='take'){stopTake();localStorage.removeItem(TK)}
+  if(T&&v!=='take'){if(T.sending)return;history.pushState({v:'take',a:T.e.id,i:++HI},'','#take');S.view='take';render();exitSubmit();return} // v6: bấm Back khi đang thi = hỏi nộp bài
   if(v==='take'){if(T){S.view='take';render();return}if(me&&db.exams[a]){startExam(a,1);return}v='home'}
   if(v==='editor'&&!E)v='home';if(v==='review'&&!db.subs[a])v='home';if(v==='class'&&!db.classes[a])v='home';
   S.view=v;S.arg=a;render();scrollTo(0,0)}
 window.addEventListener('popstate',e=>applyState(e.state));
-const TITLE={home:'Trang chủ',people:'Kết nối',profile:'Hồ sơ cá nhân',settings:'Cài đặt',class:'Lớp học',editor:'Soạn bài kiểm tra',review:'Kết quả bài làm',ai:'Trợ lý AI (Tạo đề)'};
-const IC={home:'<path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',people:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.5 3-6 6.5-6s6.5 2.5 6.5 6"/><circle cx="17" cy="9" r="2.5"/><path d="M17 14c2.8 0 4.5 1.8 4.5 4.5"/>',profile:'<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/>',settings:'<path d="M4 6h8M18 6h2M4 12h2M12 12h8M4 18h10M20 18h0"/><circle cx="15" cy="6" r="2.5"/><circle cx="9" cy="12" r="2.5"/><circle cx="17" cy="18" r="2.5"/>',ai:'<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/>',menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',out:'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>'};
-const ic=k=>`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${IC[k]}</svg>`;
+const TITLE={home:'Trang chủ',people:'Kết nối',profile:'Hồ sơ cá nhân',settings:'Cài đặt',class:'Lớp học',editor:'Soạn bài kiểm tra',review:'Kết quả bài làm',ai:'Trợ lý AI (Tạo đề)',guide:'Hướng dẫn sử dụng'};
+const IC={home:'<path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',people:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.5 3-6 6.5-6s6.5 2.5 6.5 6"/><circle cx="17" cy="9" r="2.5"/><path d="M17 14c2.8 0 4.5 1.8 4.5 4.5"/>',profile:'<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/>',settings:'<path d="M4 6h8M18 6h2M4 12h2M12 12h8M4 18h10M20 18h0"/><circle cx="15" cy="6" r="2.5"/><circle cx="9" cy="12" r="2.5"/><circle cx="17" cy="18" r="2.5"/>',ai:'<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/>',menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',out:'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
+cap:'<path d="M22 10 12 5 2 10l10 5 10-5z"/><path d="M6 12v5c3 2.5 9 2.5 12 0v-5M22 10v6"/>',present:'<path d="M2 3h20M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3M8 21l4-5 4 5"/>',student:'<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/><path d="M9 4.5 12 3l3 1.5"/>',filepen:'<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>',school:'<path d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6M12 10h.01"/>',hourglass:'<path d="M6 2h12M6 22h12M7 2v4.5a5 5 0 0 0 2 4L10.5 12 9 13.5a5 5 0 0 0-2 4V22M17 2v4.5a5 5 0 0 1-2 4L13.5 12l1.5 1.5a5 5 0 0 1 2 4V22"/>',mail:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',book:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M20 17v4H6.5A2.5 2.5 0 0 1 4 18.5"/>',okc:'<circle cx="12" cy="12" r="9"/><path d="m8.5 12.5 2.5 2.5 4.5-5"/>',xc:'<circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/>',check:'<path d="M20 6 9 17l-5-5"/>',x:'<path d="M18 6 6 18M6 6l12 12"/>',list:'<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2M9 12h6M9 16h4"/>',pin:'<path d="M12 17v5M9 3h6l-1 7 3 3v2H7v-2l3-3z"/>',upload:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',users:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>',plus:'<path d="M5 12h14M12 5v14"/>',spark:'<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 17v4M17 19h4"/>',clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',bulb:'<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z"/>',key:'<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M16 7l3 3M14 9l2 2"/>',flask:'<path d="M9 3h6M10 3v6L4.5 19a1.5 1.5 0 0 0 1.3 2.2h12.4a1.5 1.5 0 0 0 1.3-2.2L14 9V3"/>',dot:'<circle cx="12" cy="12" r="5" fill="currentColor"/>',shield:'<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',save:'<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/>',image:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',send:'<path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/>',trophy:'<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.7V17M14 14.7V17M18 4H6v7a6 6 0 0 0 12 0z"/>',trend:'<path d="m22 7-8.5 8.5-5-5L2 17M16 7h6v6"/>',alert:'<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',square:'<rect x="4" y="4" width="16" height="16" rx="3" stroke-dasharray="3 3"/>',phone:'<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/>',eye:'<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',stop:'<rect x="5" y="5" width="14" height="14" rx="2"/>'};
+IC.guide=IC.book;
+const ic=(k,c='')=>`<svg class="ic ${c}" viewBox="0 0 24 24" aria-hidden="true">${IC[k]||''}</svg>`;
+const EMO_MAP={'🎓':['cap'],'👩\u200d🏫':['present'],'🧑\u200d🎓':['student'],'📝':['filepen'],'🏫':['school'],'⏳':['hourglass'],'💌':['mail'],'📚':['book'],'✅':['okc','ic-ok'],'❌':['xc','ic-bad'],'✓':['check'],'✔':['check'],'✕':['x'],'✘':['x'],'📋':['list'],'📌':['pin'],'📤':['upload'],'📥':['download'],'⬇':['download'],'👥':['users'],'➕':['plus'],'＋':['plus'],'🤖':['spark'],'🕑':['clock'],'💡':['bulb'],'🔑':['key'],'🧪':['flask'],'🟢':['dot','ic-ok'],'🔴':['dot','ic-bad'],'🛡':['shield'],'💾':['save'],'🖼':['image'],'📨':['send'],'🎉':['trophy'],'💪':['trend'],'⚠':['alert','ic-warn'],'⬜':['square']};
+const EMO_RE=/👩\u200d🏫|🧑\u200d🎓|\p{Extended_Pictographic}\uFE0F?|[✓✕✘＋⬇]/gu;
+function iconize(root){if(!root)return;const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT),L=[];
+  while(w.nextNode()){const n=w.currentNode;EMO_RE.lastIndex=0;if(EMO_RE.test(n.nodeValue)&&!/^(TEXTAREA|OPTION|SCRIPT|STYLE|PRE|TITLE)$/.test(n.parentNode.tagName))L.push(n)}
+  L.forEach(n=>{const f=document.createDocumentFragment();let last=0,v=n.nodeValue;EMO_RE.lastIndex=0;let m;
+    while((m=EMO_RE.exec(v))){f.append(v.slice(last,m.index));const g=EMO_MAP[m[0].replace(/\uFE0F$/,'')];if(g){const t=document.createElement('template');t.innerHTML=ic(g[0],g[1]||'');f.append(t.content)}last=m.index+m[0].length}
+    f.append(v.slice(last));n.replaceWith(f)})}
 function navOpen(f){S.nav=f;$('#side').classList.toggle('open',!!f);$('#scrim').classList.toggle('show',!!f)}
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&S.nav&&$('#side'))navOpen(0)});
 function shell(b){const u=U();
   const act=['class','editor','review'].includes(S.view)?'home':(S.view==='profile'&&S.arg&&S.arg!==me)?'people':S.view;
   const nv=([k,l])=>`<button class="nv ${act===k?'on':''}" onclick="S.nav=0;go('${k}')">${ic(k)}<span class="flex-1 text-left">${l}</span>${k==='people'&&u.requests.length?`<span class="bd bg-rose-500 text-white">${u.requests.length}</span>`:''}</button>`;
   return `<div id="scrim" class="${S.nav?'show':''}" onclick="navOpen(0)"></div>
-<aside id="side" class="${S.nav?'open':''}"><div class="logo"><div class="flex items-center gap-3 relative z-10"><span class="text-3xl">🎓</span><div><b class="text-base block leading-tight">EduTest LMS</b><span class="text-xs text-indigo-600 font-semibold">Lớp học trực tuyến · v4</span></div></div></div>
-<div class="sec">ĐIỀU HƯỚNG</div>${[['home','Trang chủ'],['people','Kết nối'],...(u.role==='teacher'?[['ai','Trợ lý AI (Tạo đề)']]:[])].map(nv).join('')}
+<aside id="side" class="${S.nav?'open':''}"><div class="logo"><div class="flex items-center gap-3 relative z-10"><span class="text-3xl">${ic("cap")}</span><div><b class="text-base block leading-tight">EduTest LMS</b><span class="text-xs text-indigo-600 font-semibold">Lớp học trực tuyến · v6.1</span></div></div></div>
+<div class="sec">ĐIỀU HƯỚNG</div>${[['home','Trang chủ'],['people','Kết nối'],...(u.role==='teacher'?[['ai','Trợ lý AI (Tạo đề)']]:[]),['guide','Hướng dẫn sử dụng']].map(nv).join('')}
 <div class="sec">TÀI KHOẢN</div>${[['profile','Hồ sơ cá nhân'],['settings','Cài đặt']].map(nv).join('')}
 ${FS.ready?'':`<div class="sec">CHUYỂN TÀI KHOẢN (OFFLINE)</div><select class="inp text-sm" onchange="switchTo(this.value)">${Object.values(db.users).map(x=>`<option value="${x.uid}" ${x.uid===me?'selected':''}>${esc(x.name)}</option>`).join('')}</select>
 <p class="text-xs text-slate-400 mt-2 px-1">Dùng để thử nhiều vai trò trên cùng một máy.</p>`}</aside>
@@ -369,25 +488,69 @@ ${FS.ready?'':`<div class="sec">CHUYỂN TÀI KHOẢN (OFFLINE)</div><select cla
 <button class="flex items-center gap-2 rounded-full pr-2 hover:bg-white/80 transition" onclick="go('profile')" title="Hồ sơ">${av(u,30)}<span class="text-sm font-medium hidden md:block max-w-[10rem] truncate">${esc(u.name)}</span></button>
 <button class="btn g sm" onclick="logout()">${ic('out')}<span class="hidden sm:inline">Đăng xuất</span></button></div>
 <main class="max-w-6xl mx-auto p-4 md:p-6">${b}</main></div>`}
-function body(){const v=S.view;return v==='class'?classV():v==='people'?peopleV():v==='profile'?profileV():v==='settings'?settingsV():v==='editor'?editorV():v==='review'?reviewV():v==='ai'&&U().role==='teacher'?aiV():U().role==='teacher'?teacherV():studentV()}
+function body(){const v=S.view;return v==='class'?classV():v==='people'?peopleV():v==='profile'?profileV():v==='settings'?settingsV():v==='editor'?editorV():v==='review'?reviewV():v==='guide'?guideV():v==='ai'&&U().role==='teacher'?aiV():U().role==='teacher'?teacherV():studentV()}
 let RK='';
-function render(){const a=$('#app'),y=scrollY,key=S.view+':'+S.arg+':'+me;a.classList.toggle('still',key===RK);RK=key;
+function render(){render0();iconize($('#app'))}
+function render0(){const a=$('#app'),y=scrollY,key=S.view+':'+S.arg+':'+me;a.classList.toggle('still',key===RK);RK=key;
   if(!me||!U()){a.innerHTML=authV();return}
   if(!U().role){a.innerHTML=roleV();return}
+  if(!U().pid&&!window._pb){window._pb=1;setRole(U().role,1).finally(()=>window._pb=0)}
   if(S.view==='take'&&T){a.innerHTML=takeV();clock();return}
   a.innerHTML=shell(body());S.fade=0;scrollTo(0,y)}
+const GUIDE={
+teacher:[
+['profile','Bắt đầu và tài khoản',[
+['Đăng nhập, chọn vai trò, ID cá nhân',`Đăng nhập bằng Google rồi chọn <b>Giáo viên</b>. ID của bạn (dạng #gv…) được tạo một lần và <b>không đổi</b> khi đăng nhập lại. Học sinh dùng ID này để kết bạn hoặc xin vào lớp. Có thể đổi vai trò trong <b>Cài đặt</b>.`],
+['Hồ sơ giáo viên',`Menu <b>Hồ sơ cá nhân</b>: nhập tên, tiểu sử, ảnh đại diện và thông tin chuyên môn (trường, tổ chuyên môn, môn dạy, chức vụ, số điện thoại/Zalo, email công vụ) rồi bấm Lưu hồ sơ. Thẻ tóm tắt hiện ở đầu trang mỗi lớp của bạn. Lưu ý: người dùng đã đăng nhập đều xem được, chỉ điền thông tin muốn công khai.`],
+['Kết nối (bạn bè)',`Menu <b>Kết nối</b>: nhập ID người khác để gửi lời mời, chấp nhận hoặc từ chối lời mời đến. Học sinh là bạn bè của bạn có thể được mời vào lớp nhanh.`]]],
+['school','Lớp học và học sinh',[
+['Tạo lớp',`Trang chủ → <b>Tạo lớp học mới</b>. Mỗi lớp có ID dạng #lop… để học sinh nhập xin vào lớp. Tick “Tự động duyệt học sinh xin vào lớp” nếu không muốn duyệt từng em.`],
+['Thêm học sinh',`Vào lớp → tab <b>Học sinh</b>: duyệt hoặc từ chối yêu cầu đang chờ, mời bạn bè là học sinh, hoặc nhập ID học sinh (#hs…) để thêm thẳng. Có nút kích học sinh khỏi lớp.`],
+['Danh sách lớp bằng JSON và đăng nhập bằng mã',`Tab <b>Danh sách · Online</b>: (1) bấm “Sao chép lệnh”; (2) dán vào Gemini/ChatGPT cùng file Excel/Word danh sách lớp; (3) dán JSON trả về vào ô rồi bấm <b>Thêm / cập nhật</b> hoặc <b>Thay toàn bộ</b>. Mỗi học sinh có <b>mã + họ tên</b>. Học sinh không có Google vào bằng mục “Vào bằng mã do cô phát” ở màn hình đăng nhập và phải đúng cả mã lẫn họ tên (không phân biệt hoa/thường, có dấu hay không). Bảng hiển thị Chưa đăng nhập / Online / Offline (Online = hoạt động trong 90 giây gần nhất). Mã phải duy nhất toàn hệ thống, nên thêm tiền tố lớp (ví dụ 5A-001). Cần bật đăng nhập Ẩn danh (Anonymous) trong Firebase.`]]],
+['filepen','Soạn đề thi',[
+['Tạo bài mới và 4 loại câu hỏi',`Trang chủ → <b>Tạo bài mới</b>. Nhập tên bài, thời gian, điểm đạt (thang 10), tùy chọn đảo câu hỏi, khung giờ mở/đóng đề. Loại câu: trắc nghiệm 4 đáp án, đúng/sai, kéo thả ghép cặp, tự luận ngắn (nhiều đáp án chấp nhận cách nhau bằng dấu |). Mỗi câu có thể kèm <b>ảnh</b> (tải lên hoặc dán link), <b>giải thích</b> (hiện sau khi nộp) và <b>mức độ nhận thức</b> (Mức 1 Nhận biết, Mức 2 Thông hiểu, Mức 3 Vận dụng).`],
+['Nhập đề nhanh bằng AI',`Menu <b>Trợ lý AI</b>: sao chép lệnh, gửi AI cùng file đề Word, rồi trong trình soạn đề bấm <b>Nhập JSON sinh từ AI</b> và dán kết quả. Trường "img" nhận link ảnh công khai, "level" nhận 1/2/3, dòng lỗi được báo rõ và bỏ qua.`],
+['Cài đặt thi thật',`Khung <b>Cài đặt thi thật</b> trong trình soạn đề: <b>số lượt làm tối đa</b> (1 = chỉ một lần, 0 = không giới hạn); <b>tự nộp khi rời tab quá N lần</b>; <b>mật khẩu vào thi</b> (để trống nếu không cần, gõ - để xóa); <b>kết quả cho học sinh</b> (hiện ngay / chỉ điểm / ẩn đến khi công bố); đảo A/B/C/D riêng từng học sinh; không cho quay lại câu trước; bắt buộc toàn màn hình; <b>bốc ngẫu nhiên N câu</b> từ ngân hàng câu hỏi; <b>chỉ học sinh trong lớp được giao</b> mới được thi.`]]],
+['upload','Hàng chờ và giao bài',[
+['Duyệt phát hành',`Đề mới luôn ở trạng thái <b>Hàng chờ</b> và chưa giao được. Ở mục <b>Quản lý bài kiểm tra</b> (Trang chủ), bấm <b>Duyệt phát hành</b> thì đề mới sẵn sàng. Có thể <b>Rút về hàng chờ</b> bất cứ lúc nào: học sinh chưa bắt đầu sẽ không vào được (em đang làm dở vẫn làm tiếp được).`],
+['Giao bài vào lớp và lịch sử giao bài',`Vào lớp → tab <b>Ra bài</b> → bấm <b>Giao</b> ở đề đã duyệt (hoặc <b>Hủy giao</b>). Học sinh cũng có thể vào thi bằng ID đề (#ktra…). Ở mỗi bài trong <b>Quản lý bài kiểm tra</b>, các nhãn “Đã giao lớp” cho biết đề đang ở lớp nào (bấm nhãn để mở lớp) và mục <b>Lịch sử giao bài</b> ghi ngày giờ giao/hủy giao từng lớp.`]]],
+['clock','Theo dõi phòng thi và kết quả',[
+['Giám sát trực tiếp (Live)',`Ở mục Quản lý bài kiểm tra bấm <b>Kết quả</b> → tab <b>Giám sát trực tiếp (Live)</b>: thấy học sinh đang thi, đang ở câu mấy, đã làm bao nhiêu câu, thời gian còn lại, số lần vi phạm chuyển tab. Nút <b>Thu bài ngay</b> buộc học sinh nộp bài với các câu đã chọn.`],
+['Kết quả, thống kê, công bố, thi lại',`Tab <b>Kết quả</b>: điểm từng học sinh, thống kê (số bài nộp, điểm trung bình, cao nhất, thấp nhất, số bài đạt), tỉ lệ đúng từng câu và theo từng mức độ nhận thức. Nút <b>Xem</b> mở chi tiết bài làm; <b>Cho thi lại</b> xóa bài nộp để học sinh có thêm lượt; <b>Công bố / Ẩn kết quả</b> dùng khi đề để chế độ ẩn kết quả.`],
+['Xuất Excel / CSV',`Bấm <b>Xuất Excel / CSV</b> trong bảng Kết quả. File gồm điểm, kết quả đạt/trượt, <b>xếp loại năng lực theo Thông tư 27</b> (từ 8 điểm trở lên: Hoàn thành tốt; từ điểm đạt đến dưới 8: Hoàn thành; dưới điểm đạt: Chưa hoàn thành), số câu đúng theo Mức 1/2/3, thời gian nộp, số lần vi phạm và đúng/sai từng câu.`]]]
+],
+student:[
+['profile','Bắt đầu và tài khoản',[
+['Đăng nhập',`Có 2 cách: <b>Tiếp tục với Google</b>, hoặc nếu giáo viên đã phát mã cho bạn thì mở mục <b>Vào bằng mã do cô phát</b>, nhập mã và họ tên (phải đúng cả hai). ID cá nhân (#hs…) của bạn không đổi khi đăng nhập lại. Với đăng nhập bằng mã, hãy dùng lại đúng trình duyệt cũ để giữ lịch sử làm bài.`],
+['Hồ sơ và kết nối',`Menu <b>Hồ sơ cá nhân</b>: đổi tên, tiểu sử, ảnh đại diện. Menu <b>Kết nối</b>: kết bạn bằng ID, chấp nhận hoặc từ chối lời mời.`]]],
+['school','Vào lớp và nhận bài',[
+['Vào lớp',`Trang chủ → ô <b>Nhập ID lớp học</b> (dạng #lop…). Nếu lớp bật tự động duyệt thì vào ngay, nếu không thì chờ giáo viên duyệt. Lời mời vào lớp hiện ở mục <b>Lời mời vào lớp</b> để bạn chấp nhận hoặc từ chối.`],
+['Bài được giao',`Mục <b>Bài được giao</b> hiện các đề giáo viên đã giao, kèm trạng thái Chưa làm / Đã làm và số lượt còn lại. Bạn cũng có thể nhập thẳng ID đề (#ktra…) vào ô <b>Nhập ID bài kiểm tra</b>. Đề chưa được giáo viên duyệt phát hành sẽ chưa mở được.`]]],
+['filepen','Làm bài thi',[
+['Trước khi bắt đầu',`Màn hình <b>Quy chế phòng thi</b> cho biết số câu, thời gian, số lượt còn lại và các quy định. Tích đồng ý, nhập mật khẩu nếu giáo viên yêu cầu, rồi bấm <b>Bắt đầu làm bài</b>. Đồng hồ chạy ngay khi bắt đầu. Nếu số lượt là 1, bạn chỉ được thi <b>một lần duy nhất</b>.`],
+['Trong khi làm bài',`Dùng bảng số câu để chuyển câu (có đề không cho quay lại câu trước). Trắc nghiệm: chọn đáp án; đúng/sai: bấm một ô; ghép cặp: kéo thả hoặc chạm chọn rồi chạm ô; tự luận ngắn: gõ đáp án. Bài được <b>tự động lưu</b> sau mỗi lần chọn; nếu F5 hoặc mất mạng, mở lại sẽ khôi phục bài và đồng hồ vẫn đúng.`],
+['Quy chế và vi phạm',`Không sao chép, dán, bấm chuột phải. Mỗi lần rời tab hoặc cửa sổ (hoặc thoát toàn màn hình nếu đề yêu cầu) bị ghi lại và giáo viên thấy; đề có thể tự nộp bài khi vượt số lần cho phép. Giáo viên cũng có thể thu bài từ xa.`],
+['Thoát giữa chừng và nộp bài',`Không có chế độ thoát tạm. Nút <b>Thoát &amp; Nộp bài</b> (hoặc nút Back của trình duyệt) sẽ hiện cảnh báo: nếu đồng ý, bài được <b>nộp ngay</b> với các câu đã chọn và tính hết 1 lượt thi. Bạn cũng có thể bấm <b>Nộp bài</b> bình thường; khi hết giờ bài tự nộp.`]]],
+['trophy','Kết quả',[
+['Xem điểm và đáp án',`Sau khi nộp, màn hình kết quả hiện điểm và Đạt/Chưa đạt. Tùy cài đặt của giáo viên, đáp án chi tiết hiện ngay, hoặc chỉ hiện điểm, hoặc hiện “Chờ công bố” cho đến khi giáo viên công bố. Mục <b>Bài đã làm</b> trên Trang chủ cho xem lại.`]],
+],
+['alert','Gặp sự cố?',[
+['Các thông báo thường gặp',`<b>“Đề thi đang trong hàng chờ…”</b>: giáo viên chưa duyệt phát hành, hãy báo cô. <b>“Hết lượt làm bài”</b>: bạn đã dùng hết số lượt, nhờ giáo viên bấm “Cho thi lại” nếu cần. <b>“Sai mật khẩu vào thi”</b>: hỏi lại giáo viên. <b>“Chỉ dành cho học sinh trong lớp”</b>: bạn cần vào lớp được giao bài trước. <b>“Đề chưa mở / đã đóng”</b>: kiểm tra khung giờ của đề. <b>“Kết quả CHƯA lưu được lên máy chủ”</b>: kiểm tra mạng và bấm Nộp bài lại, bài làm vẫn được giữ.`]]]
+]};
+function guideV(){const role=S.gtab||U().role||'student',tabs=[['teacher','Dành cho giáo viên'],['student','Dành cho học sinh']].map(([k,l])=>`<button class="nv ${role===k?'on':''}" style="width:auto" onclick="S.gtab='${k}';render()">${l}</button>`).join('');
+  return `<div class="card mb-4"><h2 class="text-xl font-extrabold mb-1">Hướng dẫn sử dụng EduTest LMS</h2><p class="text-sm text-slate-500">Đầy đủ chức năng cho giáo viên và học sinh. Bấm vào từng mục để mở.</p><div class="flex gap-2 mt-3 flex-wrap">${tabs}</div></div>${GUIDE[role].map(([i,t,items],si)=>`<div class="card mb-3"><h3 class="h2">${ic(i)} ${t}</h3>${items.map(([q,a],j)=>`<details class="border rounded-xl mb-2 px-3 py-2" ${si===0&&j===0?'open':''}><summary class="cursor-pointer font-semibold text-sm">${q}</summary><div class="text-sm text-slate-600 mt-2 leading-relaxed">${a}</div></details>`).join('')}</div>`).join('')}`}
 function settingsV(){return `<div class="grid md:grid-cols-2 gap-5"><div class="card"><h3 class="h2">Vai trò</h3><p class="text-sm text-slate-500 mb-3">Hiện tại: <b>${U().role==='teacher'?'Giáo viên':'Học sinh'}</b></p><div class="flex gap-2"><button class="btn ${U().role==='teacher'?'p':'g'}" onclick="setRole('teacher')">Giáo viên</button><button class="btn ${U().role==='student'?'p':'g'}" onclick="setRole('student')">Học sinh</button></div></div>
 <div class="card"><h3 class="h2">Dữ liệu &amp; chấm điểm</h3><p class="text-sm text-slate-500 mb-2">Chế độ chấm điểm: <b>${CFG.GRADING==='cloud'?'Cloud Function (máy chủ)':'Giả lập trên máy (xem hướng dẫn ở đầu file để bật Cloud Function)'}</b>. Giờ làm bài: <b>${FS.ready?'giờ máy chủ':'giờ thiết bị (offline)'}</b>.</p><p class="text-sm text-slate-500 mb-3">Tài khoản demo chỉ dùng thử trên máy này.</p><button class="btn r" onclick="resetAll()">Xóa toàn bộ &amp; về dữ liệu mẫu</button></div></div>`}
 async function resetAll(){if(!await ask('Xóa toàn bộ dữ liệu và khôi phục dữ liệu mẫu?'))return;Object.keys(localStorage).filter(k=>k.startsWith('lmsv4_')).forEach(k=>localStorage.removeItem(k));location.reload()}
 
 /* ============ 5. KHỐI UI HỌC SINH ============ */
 const EMPTY=t=>`<p class="text-sm text-slate-400">${t}</p>`;
-const examStat=(eid,sid)=>{const ms=Object.values(db.subs).filter(s=>s.examId===eid&&s.studentId===sid);return {n:ms.length,best:ms.length?Math.max(...ms.map(s=>s.score)):null}};
+const examStat=(eid,sid)=>{const ms=Object.values(db.subs).filter(s=>s.examId===eid&&s.studentId===sid);return {n:ms.length,best:ms.length&&canSee({examId:eid}).score?Math.max(...ms.map(s=>s.score)):null}};
 const doneCount=(c,eid)=>c.students.filter(sid=>Object.values(db.subs).some(s=>s.examId===eid&&s.studentId===sid)).length;
 const prog=(d,n)=>`<div class="mt-2 flex items-center gap-2 text-xs text-slate-500"><div class="flex-1 h-2 rounded-full bg-slate-200 overflow-hidden"><div class="h-full rounded-full" style="width:${n?d/n*100:0}%;background:linear-gradient(90deg,#4f46e5,#14b8a6);transition:width .6s"></div></div><b class="text-slate-700">${d}/${n} đã làm</b></div>`;
 const idBanner=()=>`<div class="card mb-5 flex flex-wrap items-center gap-3"><span class="text-sm text-slate-500">ID của bạn</span><b class="bd bg-indigo-100 text-indigo-700 text-sm">${esc(U().pid)}</b><button class="btn g sm" onclick="copyId('${U().pid}')">Sao chép</button><span class="text-xs text-slate-400">Chia sẻ ID này để kết bạn hoặc được thêm vào lớp</span></div>`;
-function stuAssigned(){const rows=[];Object.values(db.classes).filter(c=>c.students.includes(me)).forEach(c=>c.assigns.forEach(id=>{const e=db.exams[id];if(e)rows.push({c,e,st:examStat(id,me)})}));rows.sort((a,b)=>(a.st.n>0)-(b.st.n>0));
-  return `<div class="card mb-5"><h3 class="h2">📌 Bài được giao</h3>${rows.map(({c,e,st})=>`<div class="flex items-center gap-2 p-3 border rounded-xl mb-2 flex-wrap"><div class="flex-1 min-w-0"><b class="block truncate">${esc(e.title)}</b><span class="text-xs text-slate-500">${esc(c.name)} · ${e.code} ·${e.questions.length} câu · ${e.minutes} phút${winTxt(e)}</span></div>${st.n?`<span class="bd bg-emerald-100 text-emerald-700">Đã làm · cao nhất ${st.best}</span>`:'<span class="bd bg-amber-100 text-amber-700">Chưa làm</span>'}<button class="btn p sm" onclick="startExam('${e.id}')">${st.n?'Làm lại':'Làm bài'}</button></div>`).join('')||EMPTY('Chưa có bài tập nào được giao')}</div>`}
+function stuAssigned(){const rows=[];Object.values(db.classes).filter(c=>c.students.includes(me)).forEach(c=>c.assigns.forEach(id=>{const e=db.exams[id];if(e&&isReady(e))rows.push({c,e,st:examStat(id,me)})}));rows.sort((a,b)=>(a.st.n>0)-(b.st.n>0));
+  return `<div class="card mb-5"><h3 class="h2">📌 Bài được giao</h3>${rows.map(({c,e,st})=>`<div class="flex items-center gap-2 p-3 border rounded-xl mb-2 flex-wrap"><div class="flex-1 min-w-0"><b class="block truncate">${esc(e.title)}</b><span class="text-xs text-slate-500">${esc(c.name)} · ${e.code} ·${e.questions.length} câu · ${e.minutes} phút${winTxt(e)}</span></div>${st.n?`<span class="bd bg-emerald-100 text-emerald-700">Đã làm${st.best!==null?' · cao nhất '+st.best:''}</span>`:'<span class="bd bg-amber-100 text-amber-700">Chưa làm</span>'}${exBtn(e,st)}</div>`).join('')||EMPTY('Chưa có bài tập nào được giao')}</div>`}
 function tchAssigned(){const rows=[];Object.values(db.classes).filter(c=>c.teacherId===me).forEach(c=>c.assigns.forEach(id=>{const e=db.exams[id];if(e)rows.push({c,e,d:doneCount(c,id),n:c.students.length})}));
   return `<div class="card mt-5"><h3 class="h2">📤 Bài đã giao</h3>${rows.map(r=>`<div class="p-3 border rounded-xl mb-2 cursor-pointer" onclick="S.ctab='asg';go('class','${r.c.id}')"><div class="flex items-center gap-2 flex-wrap"><b class="flex-1 min-w-0 truncate">${esc(r.e.title)}</b><span class="bd bg-emerald-100 text-emerald-700">${r.e.code}</span><span class="bd bg-indigo-100 text-indigo-700">${esc(r.c.name)}</span></div>${prog(r.d,r.n)}</div>`).join('')||EMPTY('Chưa giao bài nào')}</div>`}
 const teacherV=()=>idBanner()+teacherV0()+tchAssigned();
@@ -401,94 +564,155 @@ function studentV0(){const classes=Object.values(db.classes);
 ${drafts.length?`<div class="card mb-5 border-amber-300 bg-amber-50"><h3 class="h2">⏳ Bài đang làm dở</h3>${drafts.map(d=>`<div class="flex items-center gap-2 mb-1"><span class="flex-1 text-sm font-semibold">${esc(db.exams[d.examId].title)}</span><span class="text-xs text-slate-500">${d.end>now()?'còn '+fclock(Math.round((d.end-now())/1000)):'đã hết giờ'}</span><button class="btn s sm" onclick="startExam('${d.examId}')">Tiếp tục</button></div>`).join('')}</div>`:''}
 ${inv.length?`<div class="card mb-5 border-indigo-300"><h3 class="h2">💌 Lời mời vào lớp</h3>${inv.map(c=>`<div class="flex items-center gap-2 mb-1"><span class="flex-1 text-sm"><b>${esc(c.name)}</b> – ${esc(db.users[c.teacherId]?.name)}</span><button class="btn s sm" onclick="acceptInv('${c.id}')">Tham gia</button><button class="btn g sm" onclick="declineInv('${c.id}')">Từ chối</button></div>`).join('')}</div>`:''}
 ${stuAssigned()}<div class="grid md:grid-cols-2 gap-5"><div class="card"><h3 class="h2">📚 Lớp học của tôi</h3>${mine.map(c=>`<div class="p-3 border rounded-xl mb-2 ${c.students.includes(me)?'cursor-pointer hover:bg-slate-50':'opacity-60'}" ${c.students.includes(me)?`onclick="go('class','${c.id}')"`:''}><b>${esc(c.name)}</b>${c.pending.includes(me)?'<span class="bd bg-amber-100 text-amber-700">Chờ duyệt</span>':''}<div class="text-xs text-slate-500">GV: ${esc(db.users[c.teacherId]?.name)} ·${c.assigns.length} bài tập</div></div>`).join('')||'<p class="text-sm text-slate-400">Chưa tham gia lớp nào</p>'}</div>
-<div class="card"><h3 class="h2">✅ Bài đã làm</h3>${subs.map(s=>`<div class="flex items-center gap-2 py-2 border-b last:border-0"><div class="flex-1 min-w-0"><b class="block truncate text-sm">${esc(s.title)}</b><span class="text-xs text-slate-500">${fdate(s.at)}</span></div><b>${s.score}</b><span class="bd ${s.pass?'bg-emerald-100 text-emerald-700':'bg-rose-100 text-rose-700'}">${s.pass?'Đạt':'Chưa đạt'}</span><button class="btn g sm" onclick="go('review','${s.id}')">Xem lại</button></div>`).join('')||'<p class="text-sm text-slate-400">Chưa có bài nào</p>'}</div></div>`}
-function joinExam(){const c=nid($('#ec').value),e=Object.values(db.exams).find(x=>x.code.toLowerCase()===c);e?startExam(e.id):toast('Không tìm thấy ID bài kiểm tra','error')}
-function joinClass(){const c=nid($('#cc').value),k=Object.values(db.classes).find(x=>x.code.toLowerCase()===c);
-  if(!k)return toast('Không tìm thấy ID lớp','error');
+<div class="card"><h3 class="h2">✅ Bài đã làm</h3>${subs.map(s=>`<div class="flex items-center gap-2 py-2 border-b last:border-0"><div class="flex-1 min-w-0"><b class="block truncate text-sm">${esc(s.title)}</b><span class="text-xs text-slate-500">${fdate(s.at)}</span></div>${scoreCell(s)}<button class="btn g sm" onclick="go('review','${s.id}')">Xem lại</button></div>`).join('')||'<p class="text-sm text-slate-400">Chưa có bài nào</p>'}</div></div>`}
+async function joinExam(){const e=await needCode($('#ec').value,'exam');if(e)startExam(e.id)}
+async function joinClass(){const k=await needCode($('#cc').value,'class');if(!k)return;
   if(k.students.includes(me)||k.pending.includes(me))return toast('Bạn đã ở trong lớp / đang chờ duyệt','info');
-  if(k.auto){k.students.push(me);toast('Đã vào lớp '+k.name,'success')}else{k.pending.push(me);toast('Đã gửi yêu cầu, chờ giáo viên duyệt','success')}save();render()}
-function acceptInv(id){const c=db.classes[id];c.invites=c.invites.filter(x=>x!==me);c.students.push(me);save();render()}
-function declineInv(id){const c=db.classes[id];c.invites=c.invites.filter(x=>x!==me);save();render()}
+  if(k.auto){arr('classes',k.id,'students','add',me);toast('Đã vào lớp '+k.name,'success')}else{arr('classes',k.id,'pending','add',me);toast('Đã gửi yêu cầu, chờ giáo viên duyệt','success')}render()}
+function acceptInv(id){arr('classes',id,'invites','remove',me);arr('classes',id,'students','add',me);render()}
+function declineInv(id){arr('classes',id,'invites','remove',me);render()}
 
 /* ============ 6. KHỐI UI GIÁO VIÊN ============ */
 function teacherV0(){const cl=Object.values(db.classes).filter(c=>c.teacherId===me),ex=Object.values(db.exams).filter(e=>e.teacherId===me);
   return `<div class="grid lg:grid-cols-2 gap-5"><div class="card"><div class="flex items-center mb-3"><h3 class="h2 mb-0 flex-1">🏫 Lớp học của tôi</h3><button class="btn p sm" onclick="classForm()">＋ Tạo lớp học mới</button></div>
 ${cl.map(c=>`<div class="p-3 border rounded-xl mb-2 cursor-pointer hover:bg-slate-50" onclick="go('class','${c.id}')"><div class="flex items-center"><b class="flex-1">${esc(c.name)}</b><span class="bd bg-indigo-100 text-indigo-700">${c.code}</span></div><div class="text-xs text-slate-500">${c.students.length} học sinh · ${c.assigns.length} bài tập${c.pending.length?` · <b class="text-amber-600">${c.pending.length} chờ duyệt</b>`:''}</div></div>`).join('')||'<p class="text-sm text-slate-400">Chưa có lớp nào</p>'}</div>
 <div class="card"><div class="flex items-center mb-3"><h3 class="h2 mb-0 flex-1">📋 Quản lý bài kiểm tra</h3><button class="btn p sm" onclick="newExam()">＋ Tạo bài mới</button></div>
-${ex.map(e=>`<div class="p-3 border rounded-xl mb-2"><div class="flex items-center gap-2"><b class="flex-1 truncate">${esc(e.title)}</b><span class="bd bg-emerald-100 text-emerald-700" title="Mã bài thi">${e.code}</span></div><div class="text-xs text-slate-500 mb-2">${e.questions.length} câu · ${e.minutes} phút${winTxt(e)} · đạt từ ${e.pass}đ · ${Object.values(db.subs).filter(s=>s.examId===e.id).length} bài nộp</div>
-<div class="flex gap-1 flex-wrap"><button class="btn g sm" onclick="results('${e.id}')">Kết quả</button><button class="btn g sm" onclick="editExam('${e.id}')">Sửa</button><button class="btn g sm" onclick="dupExam('${e.id}')">Nhân bản</button><button class="btn g sm text-rose-600" onclick="delExam('${e.id}')">Xóa</button></div></div>`).join('')||'<p class="text-sm text-slate-400">Chưa có bài kiểm tra</p>'}</div></div>`}
+${ex.map(e=>`<div class="p-3 border rounded-xl mb-2"><div class="flex items-center gap-2"><b class="flex-1 truncate">${esc(e.title)}</b><span class="bd bg-emerald-100 text-emerald-700" title="Mã bài thi">${e.code}</span>${statusBadge(e)}</div><div class="text-xs text-slate-500 mb-2">${e.questions.length} câu · ${e.minutes} phút${winTxt(e)} · đạt từ ${e.pass}đ · ${Object.values(db.subs).filter(s=>s.examId===e.id).length} bài nộp</div>
+${asgInfo(e)}<div class="flex gap-1 flex-wrap">${isReady(e)?`<button class="btn g sm" onclick="setStatus('${e.id}','queue')">Rút về hàng chờ</button>`:`<button class="btn s sm" onclick="setStatus('${e.id}','ready')">Duyệt phát hành</button>`}<button class="btn g sm" onclick="results('${e.id}')">Kết quả</button><button class="btn g sm" onclick="editExam('${e.id}')">Sửa</button><button class="btn g sm" onclick="dupExam('${e.id}')">Nhân bản</button><button class="btn g sm text-rose-600" onclick="delExam('${e.id}')">Xóa</button></div></div>`).join('')||'<p class="text-sm text-slate-400">Chưa có bài kiểm tra</p>'}</div></div>`}
 function classForm(id){const c=id?db.classes[id]:{name:'',desc:''};modal(`<h3 class="h2">${id?'Sửa lớp học':'Tạo lớp học mới'}</h3><input id="cn" class="inp mb-2" placeholder="Tên lớp" value="${esc(c.name)}"><textarea id="cd" class="inp mb-3" rows="3" placeholder="Mô tả lớp">${esc(c.desc)}</textarea><div class="flex gap-2 justify-end"><button class="btn g" onclick="closeModal()">Hủy</button><button class="btn p" onclick="saveClass('${id||''}')">Lưu</button></div>`)}
 function saveClass(id){const n=$('#cn').value.trim();if(!n)return toast('Nhập tên lớp','error');const d=$('#cd').value.trim();
   if(id){db.classes[id].name=n;db.classes[id].desc=d}else{const i=uid();db.classes[i]={id:i,teacherId:me,name:n,desc:d,code:genId('lop',Object.values(db.classes).map(c=>c.code)),auto:false,students:[],pending:[],invites:[],assigns:[]}}
   save();closeModal();toast('Đã lưu lớp','success');render()}
-function results(id){const e=db.exams[id],ss=Object.values(db.subs).filter(s=>s.examId===id).sort((a,b)=>b.at-a.at);
-  modal(`<h3 class="h2">Kết quả: ${esc(e.title)}</h3><div class="overflow-x-auto"><table class="w-full text-sm whitespace-nowrap"><tr class="text-left text-slate-500"><th class="pr-3">Học sinh</th><th class="pr-3">Điểm</th><th class="pr-3">Đúng</th><th class="pr-3">KQ</th><th class="pr-3">Nộp lúc</th><th class="pr-3">Chuyển tab</th><th></th></tr>${ss.map(s=>{const u=db.users[s.studentId];return `<tr class="border-t"><td class="py-1 pr-3">${esc(u?.name||'?')}</td><td class="pr-3"><b>${s.score}</b></td><td class="pr-3">${s.correct}/${s.total}</td><td class="pr-3">${s.pass?'✅':'❌'}</td><td class="text-xs pr-3">${fdate(s.at)}</td><td class="pr-3 ${s.viol?'text-rose-600 font-bold':''}">${s.viol||0}</td><td><button class="btn g sm" onclick="closeModal();go('review','${s.id}')">Xem</button></td></tr>`}).join('')||'<tr><td colspan=7 class="py-3 text-slate-400">Chưa có bài nộp</td></tr>'}</table></div><div class="flex justify-end gap-2 mt-4"><button class="btn s" onclick="exportCSV('${id}')">⬇ Xuất Excel / CSV</button><button class="btn g" onclick="closeModal()">Đóng</button></div>`,'max-w-3xl')}
+function resultsTable(id){const e=db.exams[id],ss=Object.values(db.subs).filter(s=>s.examId===id).sort((a,b)=>b.at-a.at);
+  return `<h3 class="h2">Kết quả: ${esc(e.title)}</h3>${statsHtml(e,ss)}<div class="overflow-x-auto"><table class="w-full text-sm whitespace-nowrap"><tr class="text-left text-slate-500"><th class="pr-3">Học sinh</th><th class="pr-3">Điểm</th><th class="pr-3">Đúng</th><th class="pr-3">KQ</th><th class="pr-3">Nộp lúc</th><th class="pr-3">Chuyển tab</th><th></th></tr>${ss.map(s=>{const u=db.users[s.studentId];return `<tr class="border-t"><td class="py-1 pr-3">${esc(u?.name||'?')}</td><td class="pr-3"><b>${s.score}</b></td><td class="pr-3">${s.correct}/${s.total}</td><td class="pr-3">${s.pass?'✅':'❌'}</td><td class="text-xs pr-3">${fdate(s.at)}</td><td class="pr-3 ${s.viol?'text-rose-600 font-bold':''}">${s.viol||0}</td><td><button class="btn g sm" onclick="closeModal();go('review','${s.id}')">Xem</button> <button class="btn g sm text-rose-600" onclick="delSub('${s.id}','${id}')">Cho thi lại</button></td></tr>`}).join('')||'<tr><td colspan=7 class="py-3 text-slate-400">Chưa có bài nộp</td></tr>'}</table></div><div class="flex justify-end gap-2 mt-4 flex-wrap">${(e.reveal&&e.reveal!=='full')?`<button class="btn p" onclick="togglePub('${id}')">${e.published?'Ẩn kết quả':'Công bố kết quả'}</button>`:''}<button class="btn s" onclick="exportCSV('${id}')">⬇ Xuất Excel / CSV</button><button class="btn g" onclick="closeModal()">Đóng</button></div>`}
+function watchLive(){if(!FS.ready||FS.wl||!fbUser)return;FS.wl=1;const M=FS.m;FS.un.push(M.onSnapshot(M.query(M.collection(FS.db,'drafts'),M.where('teacherId','==','g_'+fbUser.uid)),s=>{s.docChanges().forEach(x=>{if(x.type==='removed')delete LIVE[x.doc.id];else LIVE[x.doc.id]=x.doc.data()})},e=>console.warn('live',e.code)))}
+function liveRows(id){const e=db.exams[id],tn=now(),src=Object.entries(FS.ready?LIVE:db.drafts).filter(([k,d])=>d.examId===id&&d.uid!==me);
+  return src.map(([k,d])=>{const u=db.users[d.uid],n=d.order?d.order.length:e.questions.length,done=d.order?d.order.filter(oi=>answered(d.ans&&d.ans[oi])).length:0,left=Math.max(0,Math.ceil((d.end-tn)/1000));
+    return `<tr class="border-t"><td class="py-1.5 pr-3">${esc(d.name||(u&&u.name)||'?')}</td><td class="pr-3">${(d.cur||0)+1}/${n}</td><td class="pr-3">${done}/${n}</td><td class="pr-3 tabular-nums">${left?fclock(left):'Hết giờ'}</td><td class="pr-3 ${d.viol?'text-rose-600 font-bold':''}">${d.viol||0}</td><td><button class="btn r sm" onclick="forceSubmit('${k}','${id}')">Thu bài ngay</button></td></tr>`}).join('')||'<tr><td colspan=6 class="py-4 text-slate-400">Hiện không có học sinh nào đang làm bài</td></tr>'}
+function liveV(id){return `<div class="flex items-center gap-2 mb-2"><h3 class="h2 mb-0">Học sinh đang trong phòng thi</h3><span class="bd bg-emerald-100 text-emerald-700">${ic('dot')} Trực tiếp</span></div><div class="overflow-x-auto"><table class="w-full text-sm whitespace-nowrap"><thead><tr class="text-left text-slate-500"><th class="pr-3">Học sinh</th><th class="pr-3">Đang ở câu</th><th class="pr-3">Đã làm</th><th class="pr-3">Còn lại</th><th class="pr-3">Vi phạm</th><th></th></tr></thead><tbody id="livebody">${liveRows(id)}</tbody></table></div><p class="text-xs text-slate-400 mt-3">Tự cập nhật mỗi vài giây. “Thu bài ngay” sẽ buộc học sinh nộp bài với các câu đã chọn.</p><div class="flex justify-end mt-3"><button class="btn g" onclick="closeModal()">Đóng</button></div>`}
+async function forceSubmit(key,id){if(!await ask('Thu bài ngay lập tức của học sinh này? Bài sẽ được nộp với các câu đã chọn.')){results(id,'live');return}
+  if(FS.ready){try{await FS.m.updateDoc(FS.m.doc(FS.db,'drafts',key),{forceSubmit:true});toast('Đã gửi lệnh thu bài','success')}catch(e){toast('Không gửi được lệnh ('+e.code+')','error')}}else{if(db.drafts[key]){db.drafts[key].forceSubmit=true;save()}toast('Đã ghi lệnh thu bài (chế độ offline)','info')}results(id,'live')}
+function results(id,tab){clearInterval(RT);watchLive();const tb=([k,l])=>`<button class="nv ${(tab||'res')===k?'on':''}" style="width:auto" onclick="results('${id}','${k}')">${l}</button>`;
+  modal(`<div class="flex gap-2 mb-3 flex-wrap">${[['res','Kết quả'],['live','Giám sát trực tiếp (Live)']].map(tb).join('')}</div>${tab==='live'?liveV(id):resultsTable(id)}`,'max-w-4xl');
+  if(tab==='live')RT=setInterval(()=>{const b=$('#livebody');if(!b){clearInterval(RT);return}b.innerHTML=liveRows(id);iconize(b)},3000)}
 /* Xuất CSV: BOM UTF-8 (Excel đọc đúng tiếng Việt) + dòng "sep=," (Excel mọi vùng ngôn ngữ tự tách cột); chống CSV-injection */
 function exportCSV(id){const e=db.exams[id],ss=Object.values(db.subs).filter(s=>s.examId===id).sort((a,b)=>a.at-b.at);
   if(!ss.length)return toast('Chưa có bài nộp để xuất','info');
   const cell=v=>{let s=String(v??'');if(/^[=+\-@\t\r]/.test(s))s="'"+s;return /[",;\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
-  const head=['STT','Mã HS','Tên HS','Điểm','Kết quả (Đạt/Trượt)','Thời gian nộp bài','Số lần chuyển tab (vi phạm)',...e.questions.map((_,i)=>'Câu '+(i+1)+' (Đúng/Sai/Bỏ trống)')];
-  const rows=ss.map((s,n)=>{const u=db.users[s.studentId]||{};return [n+1,u.pid||'',u.name||'(đã xóa)',s.score,s.pass?'Đạt':'Trượt',fdate(s.at),s.viol||0,...e.questions.map((_,i)=>{const r=(s.detail||[])[i]?.r;return r===true?'Đúng':r===false?'Sai':'Bỏ trống'})]});
+  const xl=s=>s.score<e.pass?'Chưa hoàn thành (CHT)':s.score>=8?'Hoàn thành tốt (HTT)':'Hoàn thành (HT)',lv=s=>{const a=[[0,0],[0,0],[0,0]];(s.detail||[]).forEach(d=>{const k=Math.min(3,Math.max(1,d.lv||1))-1;a[k][1]++;if(d.r===true)a[k][0]++});return a.map(x=>x[1]?x[0]+' đúng / '+x[1]+' câu':'')};
+  const head=['STT','Mã HS','Tên HS','Điểm','Kết quả (Đạt/Trượt)','Xếp loại năng lực (TT27)','Mức 1 Nhận biết','Mức 2 Thông hiểu','Mức 3 Vận dụng','Thời gian nộp bài','Số lần chuyển tab (vi phạm)',...e.questions.map((_,i)=>'Câu '+(i+1)+' (Đúng/Sai/Bỏ trống)')];
+  const rows=ss.map((s,n)=>{const u=db.users[s.studentId]||{};return [n+1,u.pid||'',u.name||'(đã xóa)',s.score,s.pass?'Đạt':'Trượt',xl(s),...lv(s),fdate(s.at),s.viol||0,...e.questions.map((_,i)=>{const d=dOf(s,i);return !d?((s.detail||[]).some(x=>x.qi!==undefined)?'Không bốc':'Bỏ trống'):d.r===true?'Đúng':d.r===false?'Sai':'Bỏ trống'})]});
   const text='\ufeffsep=,\r\n'+[head,...rows].map(r=>r.map(cell).join(',')).join('\r\n'),a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([text],{type:'text/csv;charset=utf-8'}));a.download=(e.title||'ket-qua').replace(/[\\/:*?"<>|]+/g,'_').trim()+'_ket-qua.csv';
   document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1500);toast('Đã xuất '+rows.length+' bài nộp','success')}
-async function dupExam(id){const e=JSON.parse(JSON.stringify(db.exams[id])),k=await KeyStore.get(id).catch(()=>null);e.id=uid();e.code=genId('ktra',Object.values(db.exams).map(x=>x.code));e.title+=' (bản sao)';
+async function dupExam(id){const e=JSON.parse(JSON.stringify(db.exams[id])),k=await KeyStore.get(id).catch(()=>null);e.id=uid();e.code=genId('ktra',Object.values(db.exams).map(x=>x.code));e.title+=' (bản sao)';e.status='queue';e.published=false;e.history=[];
   if(k)await KeyStore.set(e.id,k);db.exams[e.id]=e;save();toast('Đã nhân bản','success');render()}
 async function delExam(id){if(!await ask('Xóa bài kiểm tra này? Bài đã giao trong lớp cũng bị gỡ.'))return;delete db.exams[id];KeyStore.del(id).catch(()=>{});Object.values(db.classes).forEach(c=>c.assigns=c.assigns.filter(x=>x!==id));save();render()}
 
 /* --- Chi tiết lớp --- */
 function classV(){const c=db.classes[S.arg];if(!c)return '<p>Lớp không tồn tại</p>';const t=c.teacherId===me,tu=db.users[c.teacherId];
-  const tab=(S.ctab==='ppl'&&!t)?'asg':(S.ctab||'asg'),subsOf=sid=>Object.values(db.subs).filter(x=>x.studentId===sid);
-  const asgE=c.assigns.map(id=>db.exams[id]).filter(Boolean);
-  const head=`<button class="btn g sm mb-3" onclick="back()">← Quay lại</button><div class="card mb-5"><div class="flex flex-wrap items-center gap-2"><h2 class="text-2xl font-bold flex-1">${esc(c.name)}</h2><span class="bd bg-indigo-100 text-indigo-700 text-sm">${c.code}</span><button class="btn g sm" onclick="copyId('${c.code}')">Sao chép ID</button>${t?`<button class="btn g sm" onclick="classForm('${c.id}')">Sửa</button><button class="btn g sm text-rose-600" onclick="delClass('${c.id}')">Xóa lớp</button>`:`<button class="btn g sm text-rose-600" onclick="leaveClass('${c.id}')">Rời lớp</button>`}</div><p class="text-slate-600 mt-1">${esc(c.desc)||'<i>Chưa có mô tả</i>'}</p><p class="text-xs text-slate-400 mt-1">Giáo viên: ${esc(tu?.name)} ${esc(tu?.pid||'')} · ${c.students.length} học sinh</p>${t?`<label class="text-sm mt-2 inline-flex items-center gap-2"><input type="checkbox" ${c.auto?'checked':''} onchange="db.classes['${c.id}'].auto=this.checked;save()"> Tự động duyệt học sinh xin vào lớp</label>`:''}</div>`;
-  const tabs=`<div class="flex gap-2 mb-4 flex-wrap">${[['asg',t?'📤 Ra bài':'📌 Bài tập'],...(t?[['ppl','👥 Học sinh']]:[]),['his','🕑 Lịch sử bài làm']].map(([k,l])=>`<button class="nv ${tab===k?'on':''}" style="width:auto" onclick="S.ctab='${k}';S.fade=1;render()">${l}</button>`).join('')}</div>`;
+  const tab=(['ppl','ros'].includes(S.ctab)&&!t)?'asg':(S.ctab||'asg'),subsOf=sid=>Object.values(db.subs).filter(x=>x.studentId===sid);
+  const asgE=c.assigns.map(id=>db.exams[id]).filter(e=>e&&(t||isReady(e)));
+  const head=`<button class="btn g sm mb-3" onclick="back()">← Quay lại</button><div class="card mb-5"><div class="flex flex-wrap items-center gap-2"><h2 class="text-2xl font-bold flex-1">${esc(c.name)}</h2><span class="bd bg-indigo-100 text-indigo-700 text-sm">${c.code}</span><button class="btn g sm" onclick="copyId('${c.code}')">Sao chép ID</button>${t?`<button class="btn g sm" onclick="classForm('${c.id}')">Sửa</button><button class="btn g sm text-rose-600" onclick="delClass('${c.id}')">Xóa lớp</button>`:`<button class="btn g sm text-rose-600" onclick="leaveClass('${c.id}')">Rời lớp</button>`}</div><p class="text-slate-600 mt-1">${esc(c.desc)||'<i>Chưa có mô tả</i>'}</p>${teacherStrip(tu,c)}${t?`<label class="text-sm mt-2 inline-flex items-center gap-2"><input type="checkbox" ${c.auto?'checked':''} onchange="db.classes['${c.id}'].auto=this.checked;save()"> Tự động duyệt học sinh xin vào lớp</label>`:''}</div>`;
+  const tabs=`<div class="flex gap-2 mb-4 flex-wrap">${[['asg',t?'📤 Ra bài':'📌 Bài tập'],...(t?[['ppl','👥 Học sinh'],['ros','📋 Danh sách · Online']]:[]),['his','🕑 Lịch sử bài làm']].map(([k,l])=>`<button class="nv ${tab===k?'on':''}" style="width:auto" onclick="S.ctab='${k}';S.fade=1;render()">${l}</button>`).join('')}</div>`;
   let h='';
   if(tab==='asg'&&t){const un=Object.values(db.exams).filter(e=>e.teacherId===me&&!c.assigns.includes(e.id));
-    h=`<div class="grid lg:grid-cols-2 gap-5"><div class="card"><div class="flex items-center mb-3"><h3 class="h2 mb-0 flex-1">📤 Đã giao (${asgE.length})</h3><button class="btn p sm" onclick="newExam('${c.id}')">＋ Tạo bài mới</button></div>${asgE.map(e=>{const nd=c.students.filter(sid=>!subsOf(sid).some(x=>x.examId===e.id));return `<div class="p-3 border rounded-xl mb-2"><div class="flex items-center gap-2 flex-wrap"><b class="flex-1 min-w-0 truncate">${esc(e.title)}</b><span class="bd bg-emerald-100 text-emerald-700">${e.code}</span><span class="bd bg-indigo-100 text-indigo-700">Đã giao</span></div>${prog(c.students.length-nd.length,c.students.length)}${nd.length?`<p class="text-xs text-slate-500 mt-1">Chưa làm: ${nd.map(x=>esc(db.users[x]?.name)).join(', ')}</p>`:''}<div class="flex gap-1 mt-2 flex-wrap"><button class="btn g sm" onclick="results('${e.id}')">Kết quả</button><button class="btn g sm" onclick="editExam('${e.id}','${c.id}')">Sửa</button><button class="btn g sm" onclick="unassign('${c.id}','${e.id}')">Hủy giao</button></div></div>`}).join('')||EMPTY('Chưa giao bài nào')}</div>
-<div class="card"><h3 class="h2">📥 Chưa giao (${un.length})</h3>${un.map(e=>`<div class="flex items-center gap-2 p-3 border rounded-xl mb-2"><div class="flex-1 min-w-0"><b class="block truncate">${esc(e.title)}</b><span class="text-xs text-slate-500">${e.code} ·${e.questions.length} câu</span></div><span class="bd bg-slate-100 text-slate-600">Chưa giao</span><button class="btn s sm" onclick="assign('${c.id}','${e.id}')">Giao</button></div>`).join('')||EMPTY('Không còn bài nào chưa giao')}</div></div>`}
+    h=`<div class="grid lg:grid-cols-2 gap-5"><div class="card"><div class="flex items-center mb-3"><h3 class="h2 mb-0 flex-1">📤 Đã giao (${asgE.length})</h3><button class="btn p sm" onclick="newExam('${c.id}')">＋ Tạo bài mới</button></div>${asgE.map(e=>{const nd=c.students.filter(sid=>!subsOf(sid).some(x=>x.examId===e.id));return `<div class="p-3 border rounded-xl mb-2"><div class="flex items-center gap-2 flex-wrap"><b class="flex-1 min-w-0 truncate">${esc(e.title)}</b><span class="bd bg-emerald-100 text-emerald-700">${e.code}</span>${isReady(e)?'<span class="bd bg-indigo-100 text-indigo-700">Đã giao</span>':statusBadge(e)}</div>${prog(c.students.length-nd.length,c.students.length)}${nd.length?`<p class="text-xs text-slate-500 mt-1">Chưa làm: ${nd.map(x=>esc(db.users[x]?.name)).join(', ')}</p>`:''}<div class="flex gap-1 mt-2 flex-wrap"><button class="btn g sm" onclick="results('${e.id}')">Kết quả</button><button class="btn g sm" onclick="editExam('${e.id}','${c.id}')">Sửa</button><button class="btn g sm" onclick="unassign('${c.id}','${e.id}')">Hủy giao</button></div></div>`}).join('')||EMPTY('Chưa giao bài nào')}</div>
+<div class="card"><h3 class="h2">📥 Chưa giao (${un.length})</h3>${un.map(e=>`<div class="flex items-center gap-2 p-3 border rounded-xl mb-2"><div class="flex-1 min-w-0"><b class="block truncate">${esc(e.title)}</b><span class="text-xs text-slate-500">${e.code} ·${e.questions.length} câu</span></div>${statusBadge(e)}${isReady(e)?`<button class="btn s sm" onclick="assign('${c.id}','${e.id}')">Giao</button>`:`<button class="btn g sm" onclick="setStatus('${e.id}','ready')">Duyệt phát hành</button>`}</div>`).join('')||EMPTY('Không còn bài nào chưa giao')}</div></div>`}
   if(tab==='asg'&&!t){const rows=asgE.map(e=>({e,st:examStat(e.id,me)})).sort((x,y)=>(x.st.n>0)-(y.st.n>0));
-    h=`<div class="card"><h3 class="h2">📌 Bài tập được giao</h3>${rows.map(({e,st})=>`<div class="flex items-center gap-2 p-3 border rounded-xl mb-2 flex-wrap"><div class="flex-1 min-w-0"><b class="block truncate">${esc(e.title)}</b><span class="text-xs text-slate-500">${e.code} ·${e.questions.length} câu · ${e.minutes} phút${winTxt(e)}</span></div>${st.n?`<span class="bd bg-emerald-100 text-emerald-700">Đã làm · cao nhất ${st.best}</span>`:'<span class="bd bg-amber-100 text-amber-700">Chưa làm</span>'}<button class="btn p sm" onclick="startExam('${e.id}')">${st.n?'Làm lại':'Làm bài'}</button></div>`).join('')||EMPTY('Chưa có bài tập')}</div>`}
+    h=`<div class="card"><h3 class="h2">📌 Bài tập được giao</h3>${rows.map(({e,st})=>`<div class="flex items-center gap-2 p-3 border rounded-xl mb-2 flex-wrap"><div class="flex-1 min-w-0"><b class="block truncate">${esc(e.title)}</b><span class="text-xs text-slate-500">${e.code} ·${e.questions.length} câu · ${e.minutes} phút${winTxt(e)}</span></div>${st.n?`<span class="bd bg-emerald-100 text-emerald-700">Đã làm${st.best!==null?' · cao nhất '+st.best:''}</span>`:'<span class="bd bg-amber-100 text-amber-700">Chưa làm</span>'}${exBtn(e,st)}</div>`).join('')||EMPTY('Chưa có bài tập')}</div>`}
   if(tab==='ppl'&&t){const fr=U().friends.map(i=>db.users[i]).filter(x=>x&&x.role==='student'&&!c.students.includes(x.uid)&&!c.pending.includes(x.uid)&&!c.invites.includes(x.uid));
     h=`<div class="grid lg:grid-cols-2 gap-5"><div class="card"><h3 class="h2">👥 Học sinh (${c.students.length})</h3>${c.pending.length?`<div class="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-3"><b class="text-sm">Yêu cầu vào lớp</b>${c.pending.map(i=>db.users[i]).filter(Boolean).map(x=>`<div class="flex items-center gap-2 mt-2">${av(x,28)}<span class="flex-1 text-sm">${esc(x.name)} <i class="text-xs text-slate-400">${esc(x.pid)}</i></span><button class="btn s sm" onclick="approve('${c.id}','${x.uid}',1)">Duyệt</button><button class="btn g sm" onclick="approve('${c.id}','${x.uid}',0)">Từ chối</button></div>`).join('')}</div>`:''}
 ${c.students.map(i=>db.users[i]).filter(Boolean).map(x=>`<div class="flex items-center gap-2 py-1.5 border-b last:border-0">${av(x,30)}<div class="flex-1 min-w-0 cursor-pointer" onclick="go('profile','${x.uid}')"><b class="text-sm block truncate">${esc(x.name)}</b><span class="text-xs text-slate-500">${esc(x.pid)} · đã làm ${asgE.filter(e=>subsOf(x.uid).some(y=>y.examId===e.id)).length}/${asgE.length} bài</span></div><button class="btn g sm text-rose-600" onclick="kick('${c.id}','${x.uid}')">Kích</button></div>`).join('')||EMPTY('Chưa có học sinh')}</div>
 <div class="card"><h3 class="h2">➕ Thêm học sinh bằng ID</h3><div class="flex gap-2 mb-5"><input id="sid" class="inp" placeholder="VD: #hs10002" onkeydown="if(event.key==='Enter')addStu('${c.id}')"><button class="btn p" onclick="addStu('${c.id}')">Thêm</button></div>
 <h4 class="font-semibold text-sm mb-1">Hoặc mời bạn bè (học sinh đã kết nối)</h4>${fr.map(x=>`<div class="flex items-center gap-2 py-1">${av(x,28)}<span class="flex-1 text-sm">${esc(x.name)} <i class="text-xs text-slate-400">${esc(x.pid)}</i></span><button class="btn p sm" onclick="invite('${c.id}','${x.uid}')">Mời</button></div>`).join('')||EMPTY('Không có bạn bè phù hợp')}${c.invites.length?`<p class="text-xs text-slate-500 mt-2">Đã mời, chờ phản hồi: ${c.invites.map(i=>esc(db.users[i]?.name)).join(', ')}</p>`:''}</div></div>`}
+  if(tab==='ros'&&t){watchRoster();h=rosterV(c)}
   if(tab==='his'){const ss=Object.values(db.subs).filter(x=>c.assigns.includes(x.examId)&&(t?c.students.includes(x.studentId):x.studentId===me)).sort((x,y)=>y.at-x.at);
-    h=`<div class="card"><h3 class="h2">🕑 ${t?'Lịch sử bài làm của học sinh':'Lịch sử làm bài của tôi'}</h3>${ss.map(x=>{const st=db.users[x.studentId];return `<div class="flex items-center gap-2 py-2 border-b last:border-0 flex-wrap"><div class="flex-1 min-w-0">${t?`<b class="text-sm">${esc(st?.name)}</b> <i class="text-xs text-slate-400">${esc(st?.pid||'')}</i><br>`:''}<span class="text-sm">${esc(x.title)}</span><div class="text-xs text-slate-500">${fdate(x.at)}</div></div><b>${x.score}</b><span class="bd ${x.pass?'bg-emerald-100 text-emerald-700':'bg-rose-100 text-rose-700'}">${x.pass?'Đạt':'Chưa đạt'}</span><button class="btn g sm" onclick="go('review','${x.id}')">Xem</button></div>`}).join('')||EMPTY('Chưa có bài làm nào')}</div>`}
+    h=`<div class="card"><h3 class="h2">🕑 ${t?'Lịch sử bài làm của học sinh':'Lịch sử làm bài của tôi'}</h3>${ss.map(x=>{const st=db.users[x.studentId];return `<div class="flex items-center gap-2 py-2 border-b last:border-0 flex-wrap"><div class="flex-1 min-w-0">${t?`<b class="text-sm">${esc(st?.name)}</b> <i class="text-xs text-slate-400">${esc(st?.pid||'')}</i><br>`:''}<span class="text-sm">${esc(x.title)}</span><div class="text-xs text-slate-500">${fdate(x.at)}</div></div>${scoreCell(x)}<button class="btn g sm" onclick="go('review','${x.id}')">Xem</button></div>`}).join('')||EMPTY('Chưa có bài làm nào')}</div>`}
   return head+tabs+`<div class="${S.fade?'fade':''}">${h}</div>`}
-const assign=(cid,eid)=>{if(!eid)return;db.classes[cid].assigns.push(eid);save();toast('Đã giao bài','success');render()};
-function addStu(cid){const c=db.classes[cid],x=byPid($('#sid').value);if(!x)return toast('Không tìm thấy ID này','error');if(x.role!=='student')return toast('ID này không phải của học sinh','error');if(c.students.includes(x.uid))return toast('Học sinh đã ở trong lớp','info');
-  c.pending=c.pending.filter(i=>i!==x.uid);c.invites=c.invites.filter(i=>i!==x.uid);c.students.push(x.uid);save();toast('Đã thêm '+x.name+' vào lớp','success');render()}
-const unassign=(cid,eid)=>{db.classes[cid].assigns=db.classes[cid].assigns.filter(x=>x!==eid);save();render()};
-function approve(cid,uid_,ok){const c=db.classes[cid];c.pending=c.pending.filter(x=>x!==uid_);if(ok)c.students.push(uid_);save();render()}
-async function kick(cid,id){if(!await ask('Kích học sinh này khỏi lớp?'))return;const c=db.classes[cid];c.students=c.students.filter(x=>x!==id);save();render()}
-function invite(cid,id){db.classes[cid].invites.push(id);save();toast('Đã gửi lời mời','success');render()}
+const assign=(cid,eid)=>{if(!eid)return;if(!isReady(db.exams[eid]))return toast('Đề đang trong hàng chờ – hãy bấm “Duyệt phát hành” trước khi giao bài','error');db.classes[cid].assigns.push(eid);logAsg(eid,cid,'Giao bài');save();toast('Đã giao bài','success');render()};
+async function addStu(cid){const c=db.classes[cid],x=await needCode($('#sid').value,'user');if(!x)return;if(x.role!=='student')return toast('ID này không phải của học sinh','error');if(c.students.includes(x.uid))return toast('Học sinh đã ở trong lớp','info');
+  arr('classes',cid,'pending','remove',x.uid);arr('classes',cid,'invites','remove',x.uid);arr('classes',cid,'students','add',x.uid);toast('Đã thêm '+x.name+' vào lớp','success');render()}
+const unassign=(cid,eid)=>{db.classes[cid].assigns=db.classes[cid].assigns.filter(x=>x!==eid);logAsg(eid,cid,'Hủy giao');save();render()};
+function approve(cid,uid_,ok){arr('classes',cid,'pending','remove',uid_);if(ok)arr('classes',cid,'students','add',uid_);render()}
+async function kick(cid,id){if(!await ask('Kích học sinh này khỏi lớp?'))return;arr('classes',cid,'students','remove',id);render()}
+function invite(cid,id){arr('classes',cid,'invites','add',id);toast('Đã gửi lời mời','success');render()}
 async function delClass(id){if(!await ask('Xóa lớp học này?'))return;delete db.classes[id];save();go('home',null,1)}
-async function leaveClass(id){if(!await ask('Rời khỏi lớp này?'))return;const c=db.classes[id];c.students=c.students.filter(x=>x!==me);save();go('home',null,1)}
+async function leaveClass(id){if(!await ask('Rời khỏi lớp này?'))return;arr('classes',id,'students','remove',me);go('home',null,1)}
+
+/* --- Danh sách học sinh (JSON từ AI) + trạng thái online/offline --- */
+const ROSTER_PROMPT=`Hãy đọc danh sách học sinh trong file Excel/Word tôi đính kèm và chuyển thành một mảng JSON. Trả về CHỈ mã JSON, không giải thích. Định dạng bắt buộc:
+[
+  { "code": "HS001", "name": "Nguyễn Văn An" },
+  { "code": "HS002", "name": "Trần Thị Bình" }
+]
+Quy tắc: "code" là mã học sinh trong file (nếu file không có mã thì tự đặt HS001, HS002… theo thứ tự). Mã phải DUY NHẤT, 2–30 ký tự, chỉ gồm chữ không dấu, số, dấu chấm, gạch ngang hoặc gạch dưới, không có khoảng trắng. "name" là họ và tên đầy đủ, giữ nguyên dấu tiếng Việt. Bỏ qua dòng tiêu đề, dòng trống và cột khác.`;
+function parseRoster(txt){let t=String(txt||'').trim().replace(/^```(?:json)?\s*/i,'').replace(/```\s*$/,'');const a=t.indexOf('['),b=t.lastIndexOf(']');
+  if(a<0||b<a)return {list:[],errs:['Không thấy mảng JSON dạng [ ... ]']};let d;
+  try{d=JSON.parse(stripJsonComments(t.slice(a,b+1)).replace(/,\s*([\]}])/g,'$1'))}catch(e){return {list:[],errs:['JSON không hợp lệ: '+e.message]}}
+  if(!Array.isArray(d))d=[];const list=[],errs=[],seen=new Set();
+  d.forEach((r,i)=>{const o=r||{},code=String(o.code??o.ma??o['mã']??o.id??'').trim(),name=String(o.name??o.ten??o['tên']??o.hoten??'').trim(),n='Dòng '+(i+1)+': ',nc=ncode(code);
+    if(!/^[a-z0-9._-]{2,30}$/.test(nc))return errs.push(n+'mã "'+code+'" không hợp lệ (2–30 ký tự: chữ không dấu, số, . _ -)');
+    if(!nn(name))return errs.push(n+'thiếu họ tên');if(seen.has(nc))return errs.push(n+'mã "'+code+'" bị trùng trong file');seen.add(nc);list.push({code,name,nc})});
+  return {list,errs}}
+function refreshRoster(){if(S.view==='class'&&S.ctab==='ros'&&!$('#mdl')&&!/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement||{}).tagName||''))render()}
+function watchRoster(){if(!FS.ready||FS.wr)return;FS.wr=1;const M=FS.m,g='g_'+fbUser.uid,C=n=>M.collection(FS.db,n),er=n=>e=>console.warn(n,e.code);
+  const ls=(q,map,n)=>FS.un.push(M.onSnapshot(q,s=>{s.docChanges().forEach(x=>{if(x.type==='removed')delete map[x.doc.id];else map[x.doc.id]=n==='presence'?(x.doc.data().seen||0):x.doc.data()});refreshRoster()},er(n)));
+  ls(M.query(C('rosters'),M.where('teacherId','==',g)),RO,'rosters');ls(M.query(C('rcodes'),M.where('teacherId','==',g)),RC,'rcodes');ls(C('presence'),PRES,'presence');FS.rtk=setInterval(refreshRoster,20000)}
+function rosterV(c){const ro=(RO[c.id]||{}).list||[],tn=now(),isOn=x=>{const rc=RC[ncode(x.code)];return !!(rc&&rc.uid&&PRES[rc.uid]&&tn-PRES[rc.uid]<90000)};
+  const rows=ro.map((x,i)=>{const rc=RC[ncode(x.code)]||{},sn=rc.uid?(PRES[rc.uid]||0):0;
+    const st=!rc.uid?'<span class="bd bg-slate-100 text-slate-500">Chưa đăng nhập</span>':isOn(x)?'<span class="bd bg-emerald-100 text-emerald-700">🟢 Online</span>':('<span class="bd bg-rose-100 text-rose-700">🔴 Offline</span>'+(sn?' <span class="text-xs text-slate-400">'+fdate(sn)+'</span>':''));
+    return `<tr class="border-t"><td class="py-1 pr-3">${i+1}</td><td class="pr-3"><b>${esc(x.code)}</b></td><td class="pr-3">${esc(x.name)}</td><td>${st}</td></tr>`}).join('');
+  return `<div class="grid lg:grid-cols-2 gap-5"><div class="card"><h3 class="h2">📋 Danh sách học sinh (${ro.length}) <span class="bd bg-emerald-100 text-emerald-700">${ro.filter(isOn).length} online</span></h3>${ro.length?`<div class="overflow-x-auto"><table class="w-full text-sm whitespace-nowrap"><tr class="text-left text-slate-500"><th>STT</th><th>Mã</th><th>Họ tên</th><th>Trạng thái</th></tr>${rows}</table></div><button class="btn r sm mt-3" onclick="clearRoster('${c.id}')">Xóa toàn bộ danh sách</button>`:EMPTY('Chưa có danh sách – nhập JSON ở khung bên cạnh')}<p class="text-xs text-slate-400 mt-3">Học sinh vào bằng ô “Vào bằng mã do cô phát” ở màn hình đăng nhập (nhập mã + họ tên). Online = hoạt động trong 90 giây gần nhất.</p></div>
+<div class="card"><h3 class="h2">📥 Nhập danh sách bằng JSON</h3><ol class="text-sm text-slate-600 list-decimal pl-5 mb-3 space-y-1"><li>Sao chép lệnh bên dưới.</li><li>Dán vào Gemini/ChatGPT kèm file Excel/Word danh sách lớp.</li><li>Dán JSON AI trả về vào ô dưới rồi bấm nhập.</li></ol><pre class="p-3 rounded-xl bg-slate-900 text-slate-100 text-xs overflow-auto whitespace-pre-wrap select-all" style="max-height:12rem">${esc(ROSTER_PROMPT)}</pre><button class="btn p sm mt-2 mb-3" onclick="copyText(ROSTER_PROMPT)">📋 Sao chép lệnh</button>
+<textarea id="rj" class="inp font-mono text-xs" rows="7" oninput="S.rj=this.value" placeholder='[ { "code": "HS001", "name": "Nguyễn Văn An" } ]'>${esc(S.rj||'')}</textarea><div id="rje" class="text-xs text-rose-600 mt-2"></div><div class="flex gap-2 justify-end mt-3"><button class="btn p" onclick="importRoster('${c.id}',0)">＋ Thêm / cập nhật</button><button class="btn r" onclick="importRoster('${c.id}',1)">Thay toàn bộ</button></div></div></div>`}
+async function dropRoster(cid,o){const M=FS.m,nc=ncode(o.code),rc=RC[nc];try{if(rc&&rc.uid)await M.updateDoc(M.doc(FS.db,'classes',cid),{students:M.arrayRemove('g_'+rc.uid)});await M.deleteDoc(M.doc(FS.db,'rcodes',nc))}catch(e){console.warn('dropRoster',e.code)}}
+async function importRoster(cid,replace){if(!FS.ready)return toast('Cần đăng nhập Google và có mạng để lưu danh sách','error');
+  const r=parseRoster($('#rj').value),E=$('#rje');if(!r.list.length){E.innerHTML=(r.errs.length?r.errs:['Không có dòng hợp lệ']).map(x=>'• '+esc(x)).join('<br>');return}
+  const M=FS.m,errs=[...r.errs],ok=[];
+  for(const x of r.list){try{const q=await M.getDoc(M.doc(FS.db,'rcodes',x.nc));if(q.exists()&&(q.data().teacherId!==me||q.data().classId!==cid)){errs.push('Mã '+x.code+' đã dùng ở lớp/giáo viên khác – hãy đổi mã (vd thêm tiền tố lớp)');continue}
+    await M.setDoc(M.doc(FS.db,'rcodes',x.nc),{code:x.nc,classId:cid,teacherId:me,h:hash(nn(x.name)+'|'+x.nc)},{merge:true});ok.push({code:x.code,name:x.name})}catch(e){errs.push('Mã '+x.code+': '+(e.code||e.message))}}
+  const cur=((RO[cid]||{}).list)||[],same=(a,b)=>ncode(a.code)===ncode(b.code),list=replace?ok:[...cur.filter(o=>!ok.some(n=>same(n,o))),...ok];
+  if(replace)for(const o of cur)if(!list.some(n=>same(n,o)))await dropRoster(cid,o);
+  try{await M.setDoc(M.doc(FS.db,'rosters',cid),{teacherId:me,classId:cid,list})}catch(e){return toast('Không lưu được danh sách ('+e.code+')','error')}
+  RO[cid]={teacherId:me,classId:cid,list};S.rj=errs.length?S.rj:'';toast('Đã nhập '+ok.length+' học sinh','success');render();
+  if(errs.length)modal(`<h3 class="h2 text-amber-600">⚠ ${errs.length} dòng bị bỏ qua</h3><div class="text-sm space-y-1 mb-4">${errs.map(x=>'<p>• '+esc(x)+'</p>').join('')}</div><div class="text-right"><button class="btn p" onclick="closeModal()">Đã hiểu</button></div>`)}
+async function clearRoster(cid){if(!await ask('Xóa toàn bộ danh sách học sinh của lớp này? Các tài khoản đã vào bằng mã sẽ bị gỡ khỏi lớp.'))return;
+  for(const o of ((RO[cid]||{}).list||[]))await dropRoster(cid,o);try{await FS.m.setDoc(FS.m.doc(FS.db,'rosters',cid),{teacherId:me,classId:cid,list:[]})}catch(e){}RO[cid]={teacherId:me,classId:cid,list:[]};render()}
 
 /* --- Trình soạn đề --- */
-const blankQ=t=>({explanation:'',...blankQ0(t)});const blankQ0=t=>t==='mc'?{type:'mc',text:'',img:'',opts:['','','',''],correct:0}:t==='tf'?{type:'tf',text:'',img:'',correct:true}:t==='match'?{type:'match',text:'',img:'',pairs:[{l:'',r:''},{l:'',r:''}]}:{type:'short',text:'',img:'',answers:''};
-function newExam(cid){E={id:uid(),teacherId:me,title:'',code:genId('ktra',Object.values(db.exams).map(e=>e.code)),minutes:15,pass:5,shuffle:false,openAt:null,closeAt:null,questions:[blankQ('mc')],_cid:cid||null};go('editor')}
+const blankQ=t=>({explanation:'',level:1,...blankQ0(t)});const blankQ0=t=>t==='mc'?{type:'mc',text:'',img:'',opts:['','','',''],correct:0}:t==='tf'?{type:'tf',text:'',img:'',correct:true}:t==='match'?{type:'match',text:'',img:'',pairs:[{l:'',r:''},{l:'',r:''}]}:{type:'short',text:'',img:'',answers:''};
+function newExam(cid){E={id:uid(),teacherId:me,title:'',code:genId('ktra',Object.values(db.exams).map(e=>e.code)),status:'queue',pickCount:0,classOnly:false,minutes:15,pass:5,shuffle:false,maxTry:1,maxViol:0,reveal:'full',shuffleOpts:false,lockNav:false,fs:false,pwh:'',published:false,openAt:null,closeAt:null,questions:[blankQ('mc')],_cid:cid||null};go('editor')}
 async function editExam(id,cid){const k=await KeyStore.get(id).catch(()=>null);if(!k)toast('Không tìm thấy đáp án của đề này trên thiết bị/máy chủ — hãy nhập lại đáp án đúng','info');E=mergeExam(db.exams[id],k);E._cid=cid||null;go('editor')}
-function editorV(){return `<button class="btn g sm mb-3" onclick="leaveEditor()">← Hủy &amp; quay lại</button> <button class="btn p sm mb-3" onclick="aiImport()">🤖 Nhập JSON sinh từ AI</button><div class="card mb-4"><h3 class="h2">Thông tin bài kiểm tra <span class="bd bg-emerald-100 text-emerald-700">Mã: ${E.code}</span></h3>
+function editorV(){return `<button class="btn g sm mb-3" onclick="leaveEditor()">← Hủy &amp; quay lại</button> <button class="btn p sm mb-3" onclick="aiImport()">🤖 Nhập JSON sinh từ AI</button><div class="card mb-4"><h3 class="h2">Thông tin bài kiểm tra <span class="bd bg-emerald-100 text-emerald-700">Mã: ${E.code}</span> ${statusBadge(E)}</h3>
 <input class="inp mb-3" placeholder="Tên bài kiểm tra" value="${esc(E.title)}" oninput="E.title=this.value"><div class="grid grid-cols-3 gap-3"><label class="text-xs font-bold text-slate-500">Thời gian (phút)<input type="number" min="1" class="inp" value="${E.minutes}" oninput="E.minutes=+this.value"></label><label class="text-xs font-bold text-slate-500">Điểm đạt (/10)<input type="number" min="0" max="10" step="0.5" class="inp" value="${E.pass}" oninput="E.pass=+this.value"></label><label class="text-xs font-bold text-slate-500 flex flex-col">Đảo câu hỏi<input type="checkbox" class="mt-3 w-5 h-5" ${E.shuffle?'checked':''} onchange="E.shuffle=this.checked"></label></div><div class="grid sm:grid-cols-2 gap-3 mt-3"><label class="text-xs font-bold text-slate-500">Thời gian mở đề (để trống = mở ngay)<input type="datetime-local" class="inp" value="${toLocal(E.openAt)}" oninput="E.openAt=this.value?new Date(this.value).getTime():null"></label><label class="text-xs font-bold text-slate-500">Thời gian đóng đề (để trống = không giới hạn)<input type="datetime-local" class="inp" value="${toLocal(E.closeAt)}" oninput="E.closeAt=this.value?new Date(this.value).getTime():null"></label></div><p class="text-xs text-slate-400 mt-1">Khung giờ được so với giờ máy chủ, học sinh đổi giờ thiết bị cũng không qua mặt được (khi đã đăng nhập Google/online).</p></div>
+<div class="card mb-4"><h3 class="h2">🛡 Cài đặt thi thật</h3><div class="grid sm:grid-cols-2 gap-3">
+<label class="text-xs font-bold text-slate-500">Số lượt làm tối đa (1 = chỉ 1 lần, 0 = không giới hạn)<input type="number" min="0" class="inp" value="${E.maxTry??0}" oninput="E.maxTry=Math.max(0,+this.value||0)"></label>
+<label class="text-xs font-bold text-slate-500">Tự động nộp khi rời tab quá N lần (0 = chỉ ghi nhận)<input type="number" min="0" class="inp" value="${E.maxViol||0}" oninput="E.maxViol=Math.max(0,+this.value||0)"></label>
+<label class="text-xs font-bold text-slate-500">Bốc ngẫu nhiên N câu từ ngân hàng (0 = lấy tất cả)<input type="number" min="0" class="inp" value="${E.pickCount||0}" oninput="E.pickCount=Math.max(0,+this.value||0)"></label>
+<label class="text-xs font-bold text-slate-500">Mật khẩu vào thi<input class="inp" autocomplete="off" placeholder="${E.pwh?'Đã đặt – nhập mật khẩu mới để đổi, gõ - để xóa':'Để trống = không cần'}" oninput="E._pw=this.value"></label>
+<label class="text-xs font-bold text-slate-500">Kết quả cho học sinh<select class="inp" onchange="E.reveal=this.value"><option value="full" ${(E.reveal||'full')==='full'?'selected':''}>Hiện điểm + đáp án ngay sau khi nộp</option><option value="score" ${E.reveal==='score'?'selected':''}>Chỉ hiện điểm, đáp án khi công bố</option><option value="hide" ${E.reveal==='hide'?'selected':''}>Ẩn tất cả đến khi giáo viên công bố</option></select></label></div>
+<div class="flex flex-wrap gap-x-6 gap-y-2 mt-3 text-sm"><label class="inline-flex items-center gap-2"><input type="checkbox" ${E.shuffleOpts?'checked':''} onchange="E.shuffleOpts=this.checked"> Đảo thứ tự đáp án A/B/C/D mỗi học sinh</label><label class="inline-flex items-center gap-2"><input type="checkbox" ${E.lockNav?'checked':''} onchange="E.lockNav=this.checked"> Không cho quay lại câu trước</label><label class="inline-flex items-center gap-2"><input type="checkbox" ${E.fs?'checked':''} onchange="E.fs=this.checked"> Bắt buộc toàn màn hình</label><label class="inline-flex items-center gap-2"><input type="checkbox" ${E.classOnly?'checked':''} onchange="E.classOnly=this.checked"> Chỉ học sinh trong lớp được giao mới được thi</label></div>
+<p class="text-xs text-slate-400 mt-2">Kết quả tự công bố khi hết giờ đóng đề. Giáo viên cũng có thể bấm “Công bố kết quả” trong bảng Kết quả.</p></div>
 ${E.questions.map((q,i)=>qEd(q,i)).join('')}
 <div class="flex flex-wrap gap-2 mb-4">${Object.entries(TL).map(([k,l])=>`<button class="btn g sm" onclick="E.questions.push(blankQ('${k}'));render()">＋ ${l}</button>`).join('')}</div>
 <div class="sticky bottom-0 bg-slate-100/90 py-3 flex justify-end gap-2"><button class="btn g" onclick="leaveEditor()">Hủy</button><button class="btn s" onclick="saveExam()">💾 Lưu bài kiểm tra</button></div>`}
-function qEd(q,i){let h=`<div class="card mb-3"><div class="flex items-center gap-2 mb-2"><b class="text-indigo-600">Câu ${i+1}</b><select class="text-sm border rounded-lg px-2 py-1" onchange="setType(${i},this.value)">${Object.entries(TL).map(([k,l])=>`<option value="${k}" ${q.type===k?'selected':''}>${l}</option>`).join('')}</select><span class="flex-1"></span><button class="btn g sm" onclick="mvQ(${i},-1)">↑</button><button class="btn g sm" onclick="mvQ(${i},1)">↓</button><button class="btn g sm text-rose-600" onclick="E.questions.splice(${i},1);render()">Xóa</button></div>
+function qEd(q,i){let h=`<div class="card mb-3"><div class="flex items-center gap-2 mb-2"><b class="text-indigo-600">Câu ${i+1}</b><select class="text-sm border rounded-lg px-2 py-1" onchange="setType(${i},this.value)">${Object.entries(TL).map(([k,l])=>`<option value="${k}" ${q.type===k?'selected':''}>${l}</option>`).join('')}</select><select class="text-sm border rounded-lg px-2 py-1" title="Mức độ nhận thức" onchange="E.questions[${i}].level=+this.value">${[[1,'Mức 1 – Nhận biết'],[2,'Mức 2 – Thông hiểu'],[3,'Mức 3 – Vận dụng']].map(([v,l])=>`<option value="${v}" ${(q.level||1)===v?'selected':''}>${l}</option>`).join('')}</select><span class="flex-1"></span><button class="btn g sm" onclick="mvQ(${i},-1)">↑</button><button class="btn g sm" onclick="mvQ(${i},1)">↓</button><button class="btn g sm text-rose-600" onclick="E.questions.splice(${i},1);render()">Xóa</button></div>
 <textarea class="inp mb-2" rows="2" placeholder="Nội dung câu hỏi" oninput="E.questions[${i}].text=this.value">${esc(q.text)}</textarea>
-<div class="mb-3 flex items-center gap-3">${q.img?`<img src="${q.img}" class="h-20 rounded-lg"><button class="btn g sm" onclick="E.questions[${i}].img='';render()">Bỏ ảnh</button>`:`<label class="btn g sm cursor-pointer">🖼 Thêm hình ảnh<input type="file" accept="image/*" class="hidden" onchange="upImg(this,${i})"></label>`}</div>`;
+<div class="mb-3 flex items-center gap-3">${q.img?`<img referrerpolicy="no-referrer" src="${esc(q.img)}" class="h-20 rounded-lg"><button class="btn g sm" onclick="E.questions[${i}].img='';render()">Bỏ ảnh</button>`:`<label class="btn g sm cursor-pointer">🖼 Thêm hình ảnh<input type="file" accept="image/*" class="hidden" onchange="upImg(this,${i})"></label><input class="inp text-xs" style="max-width:17rem" placeholder="hoặc dán link ảnh https://…" onchange="E.questions[${i}].img=cleanImg(this.value);render()">`}</div>`;
   if(q.type==='mc')h+=q.opts.map((o,k)=>`<div class="flex items-center gap-2 mb-2"><input type="radio" name="c${i}" ${q.correct===k?'checked':''} onchange="E.questions[${i}].correct=${k}" title="Đáp án đúng"><b>${'ABCD'[k]}</b><input class="inp" placeholder="Đáp án ${'ABCD'[k]}" value="${esc(o)}" oninput="E.questions[${i}].opts[${k}]=this.value"></div>`).join('')+'<p class="text-xs text-slate-400">Chọn nút tròn ở đáp án đúng</p>';
   if(q.type==='tf')h+=`<div class="flex gap-4"><label><input type="radio" name="c${i}" ${q.correct?'checked':''} onchange="E.questions[${i}].correct=true"> Đáp án: Đúng</label><label><input type="radio" name="c${i}" ${!q.correct?'checked':''} onchange="E.questions[${i}].correct=false"> Đáp án: Sai</label></div>`;
   if(q.type==='match')h+=q.pairs.map((p,k)=>`<div class="flex items-center gap-2 mb-2"><input class="inp" placeholder="Vế trái" value="${esc(p.l)}" oninput="E.questions[${i}].pairs[${k}].l=this.value">→<input class="inp" placeholder="Vế phải (đáp án đúng)" value="${esc(p.r)}" oninput="E.questions[${i}].pairs[${k}].r=this.value">${q.pairs.length>2?`<button class="btn g sm" onclick="E.questions[${i}].pairs.splice(${k},1);render()">✕</button>`:''}</div>`).join('')+(q.pairs.length<6?`<button class="btn g sm" onclick="E.questions[${i}].pairs.push({l:'',r:''});render()">＋ Thêm cặp</button>`:'');
   if(q.type==='short')h+=`<input class="inp" placeholder="Đáp án chấp nhận, ngăn cách bằng dấu | (VD: CPU|cpu)" value="${esc(q.answers)}" oninput="E.questions[${i}].answers=this.value">`;
-  h+=`<textarea class="inp mt-3 text-sm" rows="2" placeholder="💡 Giải thích đáp án (chỉ hiện sau khi học sinh nộp bài)" oninput="E.questions[${i}].explanation=this.value">${esc(q.explanation||'')}</textarea>`;
+  h+=`<textarea class="inp mt-3 text-sm" rows="2" placeholder="Giải thích đáp án (chỉ hiện sau khi học sinh nộp bài)" oninput="E.questions[${i}].explanation=this.value">${esc(q.explanation||'')}</textarea>`;
   return h+'</div>'}
-function setType(i,t){const o=E.questions[i];E.questions[i]={...blankQ(t),text:o.text,img:o.img,explanation:o.explanation||''};render()}
+function setType(i,t){const o=E.questions[i];E.questions[i]={...blankQ(t),level:o.level||1,text:o.text,img:o.img,explanation:o.explanation||''};render()}
 function mvQ(i,d){const j=i+d;if(j<0||j>=E.questions.length)return;[E.questions[i],E.questions[j]]=[E.questions[j],E.questions[i]];render()}
-async function upImg(inp,i){if(inp.files[0]){E.questions[i].img=await comp(inp.files[0],600);render()}}
+async function upImg(inp,i){if(inp.files[0]){const d=await comp(inp.files[0],600);if(!d)return toast('Không đọc được ảnh này','error');E.questions[i].img=d;render()}}
 function leaveEditor(){E=null;back()}
 function saveExamVal(){if(!E.title.trim())return 'Nhập tên bài kiểm tra';if(!E.questions.length)return 'Cần ít nhất 1 câu hỏi';if(!(E.minutes>0))return 'Thời gian phải > 0';
+  if(JSON.stringify(E).length>900000)return 'Đề quá nặng (nhiều ảnh tải lên) – hãy dùng link ảnh thay vì tải ảnh lên';
+  if(E.pickCount>E.questions.length)return 'Số câu bốc ngẫu nhiên ('+E.pickCount+') lớn hơn số câu trong ngân hàng ('+E.questions.length+')';
   if(E.openAt&&E.closeAt&&E.closeAt<=E.openAt)return 'Thời gian đóng đề phải sau thời gian mở đề';
   for(let i=0;i<E.questions.length;i++){const q=E.questions[i],n='Câu '+(i+1)+': ';
     if(!q.text.trim())return n+'chưa có nội dung';
@@ -496,10 +720,11 @@ function saveExamVal(){if(!E.title.trim())return 'Nhập tên bài kiểm tra';i
     if(q.type==='match'&&q.pairs.some(p=>!p.l.trim()||!p.r.trim()))return n+'cần nhập đủ các cặp';
     if(q.type==='short'&&!q.answers.split('|').some(x=>x.trim()))return n+'cần có đáp án'}return ''}
 async function saveExam(){const bad=saveExamVal();if(bad)return toast(bad,'error');
+  if(E._pw!=null){const v=E._pw.trim();if(v==='-')E.pwh='';else if(v)E.pwh=hash('pw|'+v.toLowerCase())}
   const cid=E._cid,{pub,key}=splitExam(E);
   try{await KeyStore.set(pub.id,key)}catch(err){return toast('Không lưu được đáp án: '+(err.message||err),'error')}
-  db.exams[pub.id]=pub;if(cid&&!db.classes[cid].assigns.includes(pub.id))db.classes[cid].assigns.push(pub.id);
-  save();toast('Đã lưu bài kiểm tra','success');leaveEditor()}
+  db.exams[pub.id]=pub; // v6: không tự gán vào lớp – phải duyệt phát hành rồi mới giao
+  save();toast(isReady(pub)?'Đã lưu bài kiểm tra':'Đã lưu vào hàng chờ – bấm “Duyệt phát hành” để giao cho học sinh','success');leaveEditor()}
 
 /* ============ TRỢ LÝ AI & NHẬP JSON ============ */
 const AI_PROMPT=`Hãy đọc đề thi tôi cung cấp và chuyển đổi toàn bộ câu hỏi thành một mảng JSON chuẩn. Trả về CHỈ mã JSON, không giải thích thêm. Định dạng bắt buộc:
@@ -507,6 +732,8 @@ const AI_PROMPT=`Hãy đọc đề thi tôi cung cấp và chuyển đổi toàn
   {
     "type": "mc", // mc (Trắc nghiệm), tf (Đúng/sai), match (Ghép cặp), short (Tự luận ngắn)
     "text": "Nội dung câu hỏi",
+    "level": 1, // Mức độ nhận thức: 1 = Nhận biết, 2 = Thông hiểu, 3 = Vận dụng
+    "img": "", // Link ảnh công khai (https://...) của câu hỏi nếu đề có hình; nếu file đính kèm có ảnh, hãy đưa ảnh lên chỗ lưu ảnh công khai và điền link vào đây. Không có hình thì để \"\"
     "opts": ["Đáp án 1", "Đáp án 2", "Đáp án 3", "Đáp án 4"], // Bắt buộc có 4 đáp án nếu là 'mc'
     "correct": 0, // Vị trí đáp án đúng (0-3) cho 'mc', hoặc true/false cho 'tf'
     "pairs": [{"l": "vế trái 1", "r": "vế phải 1"}], // Chỉ dùng nếu type là 'match'
@@ -527,9 +754,9 @@ function stripJsonComments(s){let o='',q=false,i=0;for(;i<s.length;i++){const c=
 function normQ(r,i){const n='Câu '+(i+1)+': ';if(!r||typeof r!=='object')throw n+'không phải đối tượng JSON';
   const t=String(r.type||'mc').toLowerCase().trim(),text=String(r.text??'').trim();
   if(!TL[t])throw n+'type "'+r.type+'" không hợp lệ (chỉ mc/tf/match/short)';if(!text)throw n+'thiếu "text"';
-  const q={...blankQ(t),text,explanation:String(r.explanation??'').trim()};
+  const q={...blankQ(t),text,explanation:String(r.explanation??'').trim()};q.img=cleanImg(r.img??r.image??r.imageUrl??r.link);q.level=[1,2,3].includes(+r.level)?+r.level:1;
   if(t==='mc'){const o=Array.isArray(r.opts)?r.opts.map(x=>String(x??'').trim()):[];if(o.length!==4||o.some(x=>!x))throw n+'"opts" phải có đúng 4 đáp án không rỗng';
-    const c=Number(r.correct);if(r.correct===null||r.correct===''||!Number.isInteger(c)||c<0||c>3)throw n+'"correct" phải là số từ 0 đến 3';q.opts=o;q.correct=c}
+    const rc=String(r.correct).trim(),c=/^[A-Da-d]$/.test(rc)?'abcd'.indexOf(rc.toLowerCase()):Number(r.correct);if(r.correct===null||r.correct===''||!Number.isInteger(c)||c<0||c>3)throw n+'"correct" phải là số từ 0 đến 3';q.opts=o;q.correct=c}
   else if(t==='tf'){const c=typeof r.correct==='string'?r.correct.toLowerCase().trim():r.correct;if(c===true||c==='true'||c==='đúng')q.correct=true;else if(c===false||c==='false'||c==='sai')q.correct=false;else throw n+'"correct" phải là true hoặc false'}
   else if(t==='match'){const p=Array.isArray(r.pairs)?r.pairs.map(x=>({l:String(x?.l??'').trim(),r:String(x?.r??'').trim()})):[];if(p.length<2||p.length>6||p.some(x=>!x.l||!x.r))throw n+'"pairs" cần 2–6 cặp {"l","r"} không rỗng';q.pairs=p}
   else{const a=Array.isArray(r.answers)?r.answers.join('|'):String(r.answers??'');if(!a.split('|').some(x=>x.trim()))throw n+'thiếu "answers"';q.answers=a}
@@ -555,59 +782,69 @@ function saveDraft(){const d=T.d;d.upd=now();localStorage.setItem(DK+T.key,JSON.
 const GUARD={h:null,on(){if(this.h)return;const pv=e=>e.preventDefault(),h=this.h={contextmenu:pv,copy:pv,cut:pv,paste:pv,
     selectstart:e=>{if(!/^(INPUT|TEXTAREA)$/.test(e.target.tagName||''))e.preventDefault()},
     keydown:e=>{if((e.ctrlKey||e.metaKey)&&e.key.length===1&&'cvxups'.includes(e.key.toLowerCase()))e.preventDefault()},
-    visibilitychange:()=>{if(document.hidden)leave('chuyển sang tab/ứng dụng khác')}};
+    visibilitychange:()=>{if(document.hidden)leave('chuyển sang tab/ứng dụng khác')},fullscreenchange:()=>{if(T&&T.e.fs&&!document.fullscreenElement)leave('thoát chế độ toàn màn hình')}};
   for(const k in h)document.addEventListener(k,h[k]);this.b=()=>leave('rời khỏi cửa sổ làm bài');window.addEventListener('blur',this.b)},
   off(){if(!this.h)return;for(const k in this.h)document.removeEventListener(k,this.h[k]);window.removeEventListener('blur',this.b);this.h=null}};
 function leave(why){if(!T||T.sending)return;const t=Date.now();if(t-(T.lastLeave||0)<1500)return;T.lastLeave=t; // blur + visibilitychange thường bắn cùng lúc → chỉ đếm 1 lần
   const d=T.d;d.viol=(d.viol||0)+1;d.vlog=(d.vlog||[]).concat({t:now(),w:why}).slice(-50);saveDraft();
-  const b=$('#viol');if(b){b.textContent='⚠ '+d.viol;b.classList.remove('hidden')}
+  if(T.e.maxViol>0&&d.viol>=T.e.maxViol){closeModal();toast('⚠ Rời bài quá '+T.e.maxViol+' lần – bài được tự động nộp','error');setTimeout(()=>submit(true),300);return}
+  const b=$('#viol');if(b){b.innerHTML=ic('alert')+' '+d.viol;b.classList.remove('hidden')}
   toast('⚠ Đã ghi nhận bạn '+why+' (lần '+d.viol+')','error');
   modal(`<h3 class="h2 text-rose-600">⚠ Cảnh báo</h3><p class="mb-4">Hệ thống ghi nhận bạn vừa <b>${esc(why)}</b> — đây là lần thứ <b>${d.viol}</b>. Bài làm của bạn <b>không bị hủy</b>, nhưng giáo viên sẽ thấy số lần này trong kết quả.</p><div class="text-right"><button class="btn p" onclick="closeModal()">Tôi đã hiểu, tiếp tục làm bài</button></div>`)}
 
 async function startExam(id,np){const e=db.exams[id];if(!e)return toast('Bài thi không tồn tại','error');
   await syncClock();const t=now(),key=me+'_'+id;let d=loadDraft(key);const fresh=!d;
   if(fresh){ // chỉ kiểm tra khung giờ khi bắt đầu mới; bài đang làm dở vẫn tiếp tục được nhưng không vượt quá giờ đóng đề
+    if(e.teacherId!==me&&!isReady(e))return toast('Đề thi đang trong hàng chờ kiểm duyệt của giáo viên, chưa phát hành.','error');
+    if(e.classOnly&&e.teacherId!==me&&!Object.values(db.classes).some(c=>c.assigns.includes(id)&&c.students.includes(me)))return toast('Bài thi này chỉ dành cho học sinh trong lớp được giao bài.','error');
     if(e.openAt&&t<e.openAt)return toast('Đề chưa mở. Mở lúc '+fdate(e.openAt),'error');
     if(e.closeAt&&t>=e.closeAt)return toast('Đề đã đóng lúc '+fdate(e.closeAt),'error');
-    d={uid:me,examId:id,ans:{},start:t,end:Math.min(t+e.minutes*60000,e.closeAt||Infinity),upd:0,viol:0,vlog:[],order:e.shuffle?seedShuffle(e.questions.length,uid()):e.questions.map((_,i)=>i)}}
-  d.viol=d.viol||0;d.vlog=d.vlog||[];T={key,d,e,cur:0,sel:null};if(fresh)saveDraft();
+    if(e.teacherId!==me){let n=Object.values(db.subs).filter(x=>x.examId===id&&x.studentId===me).length;
+      if(FS.ready&&fbUser){try{const M=FS.m,q=await M.getDocs(M.query(M.collection(FS.db,'submissions'),M.where('studentId','==','g_'+fbUser.uid),M.where('examId','==',id)));n=Math.max(n,q.size)}catch(x){console.warn('count',x.code)}}
+      if(e.maxTry>0&&n>=e.maxTry)return toast('Bạn đã hết lượt làm bài này (tối đa '+e.maxTry+' lượt)','error');
+      if(!await gate(e,n))return}
+    d={uid:me,teacherId:e.teacherId,name:(U()&&U().name)||'',examId:id,ans:{},start:t,end:Math.min(t+e.minutes*60000,e.closeAt||Infinity),upd:0,viol:0,vlog:[],order:pickOrder(e)}}
+  d.viol=d.viol||0;d.vlog=d.vlog||[];d.teacherId=e.teacherId;d.name=d.name||(U()&&U().name)||'';T={key,d,e,cur:Math.min(d.cur||0,Math.max(0,d.order.length-1)),sel:null};if(fresh)saveDraft();
   localStorage.setItem(TK,JSON.stringify({me,id}));GUARD.on();
   clearInterval(T.iv);T.iv=setInterval(clock,500);S.view='take';S.arg=id;if(!np)history.pushState({v:'take',a:id,i:++HI},'','#take');render();scrollTo(0,0)}
-function stopTake(){GUARD.off();if(T){clearInterval(T.iv);T=null}}
-function clock(){if(!T)return;const r=Math.max(0,Math.ceil((T.d.end-now())/1000)),c=$('#clk');if(c){c.textContent=fclock(r);c.classList.toggle('text-rose-600',r<60)}if(r<=0){clearInterval(T.iv);submit(true)}}
+function stopTake(){GUARD.off();if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});if(T){clearInterval(T.iv);T=null}}
+function clock(){if(!T)return;if(T.force&&!T.sending){T.force=0;toast('Giáo viên đã thu bài của bạn','error');submit(true);return}const r=Math.max(0,Math.ceil((T.d.end-now())/1000)),c=$('#clk');if(c){c.textContent=fclock(r);c.classList.toggle('text-rose-600',r<60)}if(r<=0){clearInterval(T.iv);submit(true)}}
 const answered=a=>a!==undefined&&a!==''&&!(typeof a==='object'&&a!==null&&!Object.keys(a).length);
-function navH(){return T.d.order.map((oi,i)=>`<button onclick="T.cur=${i};render()" class="w-9 h-9 rounded-lg text-sm font-bold ${i===T.cur?'ring-2 ring-indigo-500 ring-offset-1 ':''}${answered(T.d.ans[oi])?'bg-indigo-600 text-white':'bg-white border'}">${i+1}</button>`).join('')}
+function navH(){return T.d.order.map((oi,i)=>`<button ${T.e.lockNav?'disabled':''} onclick="T.cur=${i};T.d.cur=${i};saveDraft();render()" class="w-9 h-9 rounded-lg text-sm font-bold ${i===T.cur?'ring-2 ring-indigo-500 ring-offset-1 ':''}${answered(T.d.ans[oi])?'bg-indigo-600 text-white':'bg-white border'}">${i+1}</button>`).join('')}
 function takeV(){const n=T.d.order.length,oi=T.d.order[T.cur];
-  return `<div class="min-h-screen noselect"><header class="glass border-b border-white/70 sticky top-0 z-30 p-3 flex items-center gap-3"><button class="btn g sm" onclick="pauseTake()" title="Thoát tạm – bài được lưu, đồng hồ vẫn chạy">←</button><div class="flex-1 font-bold truncate">${esc(T.e.title)}</div><span id="viol" class="bd bg-rose-100 text-rose-700 ${T.d.viol?'':'hidden'}" title="Số lần rời khỏi bài thi">⚠ ${T.d.viol||0}</span><div class="text-xl font-mono font-bold text-indigo-700" id="clk">--:--</div><button class="btn s sm" onclick="submit()">Nộp bài</button></header>
+  return `<div class="min-h-screen noselect"><header class="glass border-b border-white/70 sticky top-0 z-30 p-3 flex items-center gap-3"><button class="btn r sm" onclick="exitSubmit()" title="Thoát giữa chừng sẽ tự động nộp bài">${ic('out')}Thoát &amp; Nộp bài</button><div class="flex-1 font-bold truncate">${esc(T.e.title)}</div><span id="viol" class="bd bg-rose-100 text-rose-700 ${T.d.viol?'':'hidden'}" title="Số lần rời khỏi bài thi">⚠ ${T.d.viol||0}</span><div class="text-xl font-mono font-bold text-indigo-700" id="clk">--:--</div><button class="btn s sm" onclick="submit()">Nộp bài</button></header>
 <div class="max-w-3xl mx-auto p-4"><div class="flex flex-wrap gap-2 mb-4" id="nav">${navH()}</div><div class="card" id="qbox">${qHtml()}</div>
-<div class="flex justify-between mt-4"><button class="btn g" ${T.cur===0?'disabled':''} onclick="T.cur--;render()">← Câu trước</button><button class="btn p" ${T.cur===n-1?'disabled':''} onclick="T.cur++;render()">Câu sau →</button></div><p class="text-xs text-slate-400 text-center mt-4">✔ Tự động lưu mỗi khi bạn chọn đáp án – F5 hoặc mất mạng vẫn khôi phục được</p></div></div>`}
-function pauseTake(){localStorage.removeItem(TK);back()}
+<div class="flex justify-between mt-4"><button class="btn g" ${T.cur===0||T.e.lockNav?'disabled':''} onclick="T.cur--;T.d.cur=T.cur;saveDraft();render()">← Câu trước</button><button class="btn p" ${T.cur===n-1?'disabled':''} onclick="nextQ()">Câu sau →</button></div><p class="text-xs text-slate-400 text-center mt-4">✔ Tự động lưu mỗi khi bạn chọn đáp án – F5 hoặc mất mạng vẫn khôi phục được</p></div></div>`}
+function exitSubmit(){if(!T||T.sending)return;modal(`<div class="border-l-4 border-rose-600 pl-4"><h3 class="h2 text-rose-600">CẢNH BÁO QUY CHẾ THI</h3><p class="text-sm text-slate-700"><b>Bạn đang trong thời gian làm bài!</b> Nếu bạn thoát ra giữa chừng, hệ thống sẽ <b class="text-rose-600">TỰ ĐỘNG NỘP BÀI NGAY LẬP TỨC</b> với các câu đã chọn và <b>tính hết 1 lượt thi</b>. Bạn có chắc chắn muốn nộp và thoát không?</p></div><div class="flex gap-2 justify-end mt-5"><button class="btn g" onclick="closeModal()">Ở lại làm tiếp</button><button class="btn r" onclick="closeModal();submit(true)">Đồng ý nộp</button></div>`)}
 function qHtml(){const oi=T.d.order[T.cur],q=T.e.questions[oi],a=T.d.ans[oi];
-  let h=`<div class="text-xs font-bold text-indigo-600 mb-1">Câu ${T.cur+1}/${T.d.order.length} · ${TL[q.type]}</div><div class="font-semibold whitespace-pre-wrap mb-3 text-lg">${esc(q.text)}</div>${q.img?`<img src="${q.img}" class="max-h-64 rounded-lg mb-3 cursor-zoom-in" onclick="zoom(this.src)">`:''}`;
-  if(q.type==='mc')h+=q.opts.map((o,i)=>`<label class="flex items-center gap-3 p-3 border rounded-xl mb-2 cursor-pointer ${a===i?'bg-indigo-50 border-indigo-500':'hover:bg-slate-50'}"><input type="radio" name="o" ${a===i?'checked':''} onchange="ans(${oi},${i})"><b>${'ABCD'[i]}.</b> ${esc(o)}</label>`).join('');
+  let h=`<div class="text-xs font-bold text-indigo-600 mb-1">Câu ${T.cur+1}/${T.d.order.length} · ${TL[q.type]}</div><div class="font-semibold whitespace-pre-wrap mb-3 text-lg">${esc(q.text)}</div>${q.img?`<img referrerpolicy="no-referrer" src="${esc(q.img)}" class="max-h-64 rounded-lg mb-3 cursor-zoom-in" onclick="zoom(this.src)">`:''}`;
+  if(q.type==='mc')h+=(T.e.shuffleOpts?seedShuffle(q.opts.length,T.key+':'+oi):q.opts.map((_,z)=>z)).map((i,p)=>{const o=q.opts[i];return `<label class="flex items-center gap-3 p-3 border rounded-xl mb-2 cursor-pointer ${a===i?'bg-indigo-50 border-indigo-500':'hover:bg-slate-50'}"><input type="radio" name="o" ${a===i?'checked':''} onchange="ans(${oi},${i})"><b>${'ABCD'[p]}.</b> ${esc(o)}</label>`}).join('');
   if(q.type==='tf')h+=`<div class="grid grid-cols-2 gap-3">${[[true,'✔ Đúng'],[false,'✘ Sai']].map(([v,l])=>`<button onclick="ans(${oi},${v})" class="p-4 rounded-xl border-2 font-bold ${a===v?'border-indigo-500 bg-indigo-50 text-indigo-700':'hover:bg-slate-50'}">${l}</button>`).join('')}</div>`;
   if(q.type==='short')h+=`<input class="inp text-lg" placeholder="Nhập câu trả lời…" value="${esc(a||'')}" oninput="ans(${oi},this.value,1)" onpaste="return false" ondrop="return false" autocomplete="off">`;
   if(q.type==='match'){const used=Object.values(a||{});
     h+=`<div class="grid md:grid-cols-2 gap-4"><div>${q.lefts.map((l,i)=>{const v=a&&a[i];return `<div class="flex items-center gap-2 mb-2"><div class="flex-1 p-2 bg-slate-100 rounded-lg text-sm">${esc(l)}</div>→<div class="flex-1 min-h-[2.5rem] border-2 border-dashed rounded-lg ${v!==undefined?'border-indigo-400':'border-slate-300'}" ondragover="event.preventDefault()" ondrop="drop(event,${oi},${i})" onclick="place(${oi},${i})">${v!==undefined?`<span class="chip" draggable="true" ondragstart="event.dataTransfer.setData('text','${v}')" onclick="event.stopPropagation();unplace(${oi},${i})" title="Bấm để bỏ">${esc(q.rights[v])}</span>`:''}</div></div>`}).join('')}</div>
 <div class="p-2 bg-slate-50 rounded-xl"><div class="text-xs text-slate-500 mb-1">Kéo thả vào ô bên trái (hoặc chạm chọn rồi chạm ô)</div>${q.rights.map((r,j)=>used.includes(j)?'':`<span class="chip ${T.sel===j?'ring-2 ring-indigo-500':''}" draggable="true" ondragstart="event.dataTransfer.setData('text','${j}')" onclick="T.sel=${j};refreshQ()">${esc(r)}</span>`).join('')||'<span class="text-xs text-slate-400">Đã ghép hết</span>'}</div></div>`}
   return h}
-function refreshQ(){$('#qbox').innerHTML=qHtml();$('#nav').innerHTML=navH()}
+function refreshQ(){$('#qbox').innerHTML=qHtml();$('#nav').innerHTML=navH();iconize($('#qbox'))}
 function ans(oi,v,quiet){T.d.ans[oi]=v;saveDraft();quiet?($('#nav').innerHTML=navH()):refreshQ()}
 function setMatch(oi,i,j){const a={...(T.d.ans[oi]||{})};for(const k in a)if(a[k]===j)delete a[k];a[i]=j;T.sel=null;ans(oi,a)}
 function drop(ev,oi,i){ev.preventDefault();setMatch(oi,i,+ev.dataTransfer.getData('text'))}
 function place(oi,i){if(T.sel!==null)setMatch(oi,i,T.sel)}
 function unplace(oi,i){const a={...(T.d.ans[oi]||{})};delete a[i];ans(oi,a)}
 async function submit(auto){if(!T||T.sending)return;
-  if(!auto){const left=T.e.questions.filter((_,i)=>!answered(T.d.ans[i])).length;if(!await ask(left?`Còn ${left} câu chưa trả lời. Vẫn nộp bài?`:'Xác nhận nộp bài?'))return}
+  if(!auto){const left=T.d.order.filter(oi=>!answered(T.d.ans[oi])).length;if(!await ask(left?`Còn ${left} câu chưa trả lời. Vẫn nộp bài?`:'Xác nhận nộp bài?'))return}
   if(!T||T.sending)return;T.sending=true;const e=T.e,d=T.d;let sub;
   try{await syncClock();sub=await Grader.grade(e,d,T.key)} // máy chủ nhận bài làm rồi mới chấm
   catch(err){if(!T)return;T.sending=false;toast('Chưa nộp được: '+(err.message||err)+' — bài làm vẫn được lưu, hãy thử lại.','error');if(auto){clearInterval(T.iv);T.iv=setInterval(clock,5000)}return}
-  db.subs[sub.id]=sub;if(cloud())synced['submissions/'+sub.id]=JSON.stringify(sub);
+  if(!cloud()&&FS.ready){let ok=0,er;for(let i=0;i<3&&!ok;i++){try{await FS.m.setDoc(FS.m.doc(FS.db,'submissions',sub.id),sub);ok=1}catch(x){er=x;await new Promise(r=>setTimeout(r,700*(i+1)))}}
+    if(!ok){if(!T)return;T.sending=false;toast('⚠ Kết quả CHƯA lưu được lên máy chủ ('+(er&&er.code||er)+'). Bài làm vẫn được giữ — hãy bấm Nộp bài lại.','error');if(auto){clearInterval(T.iv);T.iv=setInterval(clock,5000)}return}}
+  db.subs[sub.id]=sub;if(FS.ready)synced['submissions/'+sub.id]=sig('submissions',sub);
   delete db.drafts[T.key];localStorage.removeItem(DK+T.key);localStorage.removeItem(TK);save();
   stopTake();closeModal();S={view:'review',arg:sub.id,fresh:1};history.replaceState({v:'review',a:sub.id,i:HI},'','#review');render();scrollTo(0,0)}
-function reviewV(){const s=db.subs[S.arg];if(!s)return '<p>Không tìm thấy bài làm</p>';const e=db.exams[s.examId],det=s.detail||[];
+function reviewV(){const s=db.subs[S.arg];if(!s)return '<p>Không tìm thấy bài làm</p>';const e=db.exams[s.examId],det=s.detail||[],cs=canSee(s);
+  if(!cs.score)return `<button class="btn g sm mb-3" onclick="back()">← Quay lại</button><div class="card text-center"><div class="text-5xl">📨</div><h2 class="text-xl font-extrabold mt-2">Đã nộp bài thành công</h2><p class="text-slate-500 mt-1">${esc(s.title)} · ${fdate(s.at)}</p><p class="text-sm text-slate-500 mt-2">Kết quả sẽ hiện khi giáo viên công bố.</p></div>`;
   return `<button class="btn g sm mb-3" onclick="back()">← Quay lại</button><div class="card text-center mb-5 ${s.pass?'bg-emerald-50 border-emerald-300':'bg-rose-50 border-rose-300'}"><div class="text-5xl">${s.pass?'🎉':'💪'}</div><h2 class="text-2xl font-extrabold mt-1 ${s.pass?'text-emerald-700':'text-rose-700'}">${s.pass?'BẠN ĐÃ ĐẠT':'BẠN CHƯA ĐẠT'}</h2><p class="text-4xl font-black mt-2">${s.score}<span class="text-lg text-slate-400">/10</span></p><p class="text-sm text-slate-500">${esc(s.title)} · đúng ${s.correct}/${s.total} câu · ${fdate(s.at)}</p>${s.viol?`<p class="text-sm font-bold text-rose-600 mt-1">⚠ Đã rời khỏi bài thi ${s.viol} lần</p>`:''}</div>
-${e?e.questions.map((q,i)=>{const d=det[i]||{},good=d.r===true;return `<div class="card mb-3 border-l-4 ${good?'border-l-emerald-500':'border-l-rose-500'}"><b class="text-sm text-slate-500">Câu ${i+1} · ${TL[q.type]} ${good?'✅':d.r===null?'⬜ bỏ trống':'❌'}</b><p class="font-semibold whitespace-pre-wrap my-1">${esc(q.text)}</p>${q.img?`<img src="${q.img}" class="max-h-40 rounded-lg my-2 cursor-zoom-in" onclick="zoom(this.src)">`:''}<p class="text-sm">Bạn chọn: ${d.a?esc(d.a):'<i class="text-slate-400">(chưa trả lời)</i>'}</p>${good?'':`<p class="text-sm text-emerald-700">Đáp án đúng: ${esc(d.c||'')}</p>`}${d.x?`<p class="text-sm mt-2 p-2 rounded-lg bg-amber-50 text-amber-800">💡 ${esc(d.x)}</p>`:''}</div>`}).join(''):'<p class="text-slate-500 text-center">Đề thi gốc đã bị giáo viên xóa nên không xem được chi tiết.</p>'}`}
+${!cs.detail?'<div class="card text-center text-sm text-slate-500">Đáp án chi tiết sẽ hiện khi giáo viên công bố kết quả.</div>':(e||det.length)?(det.length&&det[0].t!==undefined?det.map((d,i)=>({text:d.t,type:d.y,img:(e&&e.questions[d.qi??i]&&e.questions[d.qi??i].text===d.t)?e.questions[d.qi??i].img:''})):e.questions).map((q,i)=>{const d=det[i]||{},good=d.r===true;return `<div class="card mb-3 border-l-4 ${good?'border-l-emerald-500':'border-l-rose-500'}"><b class="text-sm text-slate-500">Câu ${i+1} · ${TL[q.type]} ${good?'✅':d.r===null?'⬜ bỏ trống':'❌'}</b><p class="font-semibold whitespace-pre-wrap my-1">${esc(q.text)}</p>${q.img?`<img referrerpolicy="no-referrer" src="${esc(q.img)}" class="max-h-40 rounded-lg my-2 cursor-zoom-in" onclick="zoom(this.src)">`:''}<p class="text-sm">Bạn chọn: ${d.a?esc(d.a):'<i class="text-slate-400">(chưa trả lời)</i>'}</p>${good?'':`<p class="text-sm text-emerald-700">Đáp án đúng: ${esc(d.c||'')}</p>`}${d.x?`<p class="text-sm mt-2 p-2 rounded-lg bg-amber-50 text-amber-800">💡 ${esc(d.x)}</p>`:''}</div>`}).join(''):'<p class="text-slate-500 text-center">Đề thi gốc đã bị giáo viên xóa nên không xem được chi tiết.</p>'}`}
 
 /* ============ 8. KHỞI ĐỘNG – khôi phục bài đang làm khi F5 ============ */
 (function boot(){let t=null;try{t=JSON.parse(localStorage.getItem(TK))}catch(e){}
